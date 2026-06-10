@@ -11,6 +11,22 @@ import {
   mockPayables, mockStockRisks
 } from '../data/mockData';
 
+const STORAGE_KEY = 'supply_chain_app_state';
+
+interface PersistData {
+  purchaseOrders: PurchaseOrder[];
+  quotes: SupplierQuote[];
+  receipts: WarehouseReceipt[];
+  stockRecords: StockRecord[];
+  stockMovements: StockMovement[];
+  salesOrders: SalesOrder[];
+  shipments: Shipment[];
+  payables: Payable[];
+  stockRisks: StockRisk[];
+  lastSaved: string;
+  version: number;
+}
+
 interface AppState {
   products: Product[];
   suppliers: Supplier[];
@@ -45,6 +61,8 @@ interface AppState {
   addPayment: (payableId: string, payment: { amount: number; method: string; reference?: string; remark?: string }) => void;
 
   recalculateStockRisks: () => void;
+  resetToMockData: () => void;
+  getPersistInfo: () => { lastSaved: string | null; hasPersistedData: boolean };
 }
 
 const generateId = (prefix: string, length = 3) => {
@@ -64,18 +82,76 @@ const today = () => {
   return d.toISOString().split('T')[0] + ' ' + d.toTimeString().split(' ')[0];
 };
 
+const loadFromStorage = (): Partial<PersistData> | null => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as PersistData;
+    if (data.version !== 1) return null;
+    return data;
+  } catch (e) {
+    console.error('Failed to load state from localStorage:', e);
+    return null;
+  }
+};
+
+const saveToStorage = (state: any) => {
+  try {
+    const data: PersistData = {
+      purchaseOrders: state.purchaseOrders,
+      quotes: state.quotes,
+      receipts: state.receipts,
+      stockRecords: state.stockRecords,
+      stockMovements: state.stockMovements,
+      salesOrders: state.salesOrders,
+      shipments: state.shipments,
+      payables: state.payables,
+      stockRisks: state.stockRisks,
+      lastSaved: new Date().toISOString(),
+      version: 1,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error('Failed to save state to localStorage:', e);
+  }
+};
+
+const getInitialState = () => {
+  const persisted = loadFromStorage();
+  if (persisted) {
+    console.log('Loaded persisted data from localStorage');
+    return {
+      products: mockProducts,
+      suppliers: mockSuppliers,
+      purchaseOrders: persisted.purchaseOrders || mockPurchaseOrders,
+      quotes: persisted.quotes || mockQuotes,
+      receipts: persisted.receipts || mockReceipts,
+      stockRecords: persisted.stockRecords || mockStockRecords,
+      stockMovements: persisted.stockMovements || mockStockMovements,
+      salesOrders: persisted.salesOrders || mockSalesOrders,
+      shipments: persisted.shipments || mockShipments,
+      payables: persisted.payables || mockPayables,
+      stockRisks: persisted.stockRisks || mockStockRisks,
+    };
+  }
+  console.log('No persisted data found, using mock data');
+  return {
+    products: mockProducts,
+    suppliers: mockSuppliers,
+    purchaseOrders: mockPurchaseOrders,
+    quotes: mockQuotes,
+    receipts: mockReceipts,
+    stockRecords: mockStockRecords,
+    stockMovements: mockStockMovements,
+    salesOrders: mockSalesOrders,
+    shipments: mockShipments,
+    payables: mockPayables,
+    stockRisks: mockStockRisks,
+  };
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
-  products: mockProducts,
-  suppliers: mockSuppliers,
-  purchaseOrders: mockPurchaseOrders,
-  quotes: mockQuotes,
-  receipts: mockReceipts,
-  stockRecords: mockStockRecords,
-  stockMovements: mockStockMovements,
-  salesOrders: mockSalesOrders,
-  shipments: mockShipments,
-  payables: mockPayables,
-  stockRisks: mockStockRisks,
+  ...getInitialState(),
 
   addPurchaseOrder: (orderData) => set((state) => {
     const now = new Date();
@@ -91,14 +167,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       status: orderData.items.some(i => i.unitPrice) ? 'confirmed' : (orderData.supplierId ? 'quoted' : 'draft'),
       items: orderData.items.map(i => ({ ...i, receivedQty: 0, acceptedQty: 0, rejectedQty: 0 })),
     };
-    return { purchaseOrders: [newOrder, ...state.purchaseOrders] };
+    const newState = { purchaseOrders: [newOrder, ...state.purchaseOrders] };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
-  updatePurchaseOrder: (id, updates) => set((state) => ({
-    purchaseOrders: state.purchaseOrders.map(p =>
-      p.id === id ? { ...p, ...updates } : p
-    )
-  })),
+  updatePurchaseOrder: (id, updates) => set((state) => {
+    const newState = {
+      purchaseOrders: state.purchaseOrders.map(p =>
+        p.id === id ? { ...p, ...updates } : p
+      )
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
 
   acceptQuote: (quoteId) => set((state) => {
     const quote = state.quotes.find(q => q.id === quoteId);
@@ -111,7 +193,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
 
     const updatedPO = state.purchaseOrders.find(p => p.id === quote.purchaseOrderId);
-    if (!updatedPO) return { quotes: updatedQuotes };
+    if (!updatedPO) {
+      const newState = { quotes: updatedQuotes };
+      saveToStorage({ ...state, ...newState });
+      return newState;
+    }
 
     const poItems: PurchaseItem[] = quote.items.map(qi => {
       const existing = updatedPO.items.find(i => i.productId === qi.productId);
@@ -129,7 +215,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const totalAmount = quote.items.reduce((s, i) => s + i.subtotal, 0);
 
-    return {
+    const newState = {
       quotes: updatedQuotes,
       purchaseOrders: state.purchaseOrders.map(p =>
         p.id === quote.purchaseOrderId
@@ -145,6 +231,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           : p
       )
     };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
   addQuote: (quoteData) => set((state) => {
@@ -154,7 +242,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       submitTime: today(),
       status: 'submitted',
     };
-    return { quotes: [...state.quotes, newQuote] };
+
+    const updatedPOs = state.purchaseOrders.map(p =>
+      p.id === quoteData.purchaseOrderId && p.status === 'pending_quote'
+        ? { ...p, status: 'quoted' as const }
+        : p
+    );
+
+    const newState = {
+      quotes: [...state.quotes, newQuote],
+      purchaseOrders: updatedPOs,
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
   addReceipt: (receiptData) => set((state) => {
@@ -280,13 +380,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       payments: [],
     };
 
-    return {
+    const newState = {
       receipts: [newReceipt, ...state.receipts],
       stockRecords: updatedStockRecords,
       stockMovements: [...newMovements, ...state.stockMovements],
       purchaseOrders: updatedPOs,
       payables: [newPayable, ...state.payables],
     };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
   allocateStock: (salesOrderId, allocations) => set((state) => {
@@ -339,13 +441,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const anyAllocated = updatedItems.some(i => (i.allocatedQty || 0) > 0);
     const newStatus = allAllocated ? 'allocated' : (anyAllocated ? 'partially_allocated' : so.status);
 
-    return {
+    const newState = {
       salesOrders: state.salesOrders.map(s =>
         s.id === salesOrderId ? { ...s, items: updatedItems, status: newStatus } : s
       ),
       stockRecords: updatedStocks,
       stockMovements: [...newMovements, ...state.stockMovements],
     };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
   releaseAllocation: (salesOrderId) => set((state) => {
@@ -367,14 +471,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     });
 
-    return {
+    const newState = {
       salesOrders: state.salesOrders.map(s =>
         s.id === salesOrderId
-          ? { ...s, items: s.items.map(i => ({ ...i, allocatedQty: 0 })), status: 'pending_allocation' }
+          ? { ...s, items: s.items.map(i => ({ ...i, allocatedQty: 0 })), status: 'pending_allocation' as const }
           : s
       ),
       stockRecords: updatedStocks,
     };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
   createShipment: (salesOrderId, shipmentData) => set((state) => {
@@ -487,7 +593,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     else if (updatedSOItems.every(i => (i.allocatedQty || 0) >= i.quantity)) soStatus = 'allocated';
     else if (updatedSOItems.some(i => (i.allocatedQty || 0) > 0)) soStatus = 'partially_allocated';
 
-    return {
+    const newState = {
       shipments: [newShipment, ...state.shipments],
       stockRecords: updatedStocks,
       stockMovements: [...newMovements, ...state.stockMovements],
@@ -495,22 +601,28 @@ export const useAppStore = create<AppState>((set, get) => ({
         s.id === salesOrderId ? { ...s, items: updatedSOItems, status: soStatus } : s
       ),
     };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
-  updateShipmentStatus: (shipmentId, status, node) => set((state) => ({
-    shipments: state.shipments.map(sh =>
-      sh.id === shipmentId
-        ? {
-            ...sh,
-            status,
-            logistics: [...sh.logistics, { ...node, time: today() }],
-            shipTime: ['shipped', 'in_transit', 'out_for_delivery', 'delivered'].includes(status) && !sh.shipTime
-              ? today() : sh.shipTime,
-            actualArrival: status === 'delivered' ? today() : sh.actualArrival,
-          }
-        : sh
-    )
-  })),
+  updateShipmentStatus: (shipmentId, status, node) => set((state) => {
+    const newState = {
+      shipments: state.shipments.map(sh =>
+        sh.id === shipmentId
+          ? {
+              ...sh,
+              status,
+              logistics: [...sh.logistics, { ...node, time: today() }],
+              shipTime: ['shipped', 'in_transit', 'out_for_delivery', 'delivered'].includes(status) && !sh.shipTime
+                ? today() : sh.shipTime,
+              actualArrival: status === 'delivered' ? today() : sh.actualArrival,
+            }
+          : sh
+      )
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
 
   addPayment: (payableId, payment) => set((state) => {
     const ap = state.payables.find(p => p.id === payableId);
@@ -518,9 +630,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const paidAmount = ap.paidAmount + payment.amount;
     const unpaidAmount = ap.totalAmount - paidAmount;
-    const status = unpaidAmount <= 0 ? 'paid' : (paidAmount > 0 ? 'partial' : 'unpaid');
+    let status: 'paid' | 'partial' | 'unpaid';
+    if (unpaidAmount <= 0) status = 'paid';
+    else if (paidAmount > 0) status = 'partial';
+    else status = 'unpaid';
 
-    return {
+    const newState = {
       payables: state.payables.map(p =>
         p.id === payableId
           ? {
@@ -533,6 +648,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           : p
       )
     };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
 
   recalculateStockRisks: () => set((state) => {
@@ -580,9 +697,39 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }).filter(r => r.riskLevel !== 'normal' || r.affectedOrders.length > 0);
 
-    return { stockRisks: risks.sort((a, b) => {
-      const order = { critical: 0, warning: 1, normal: 2 };
-      return order[a.riskLevel] - order[b.riskLevel];
-    }) };
+    const newState = {
+      stockRisks: risks.sort((a, b) => {
+        const order = { critical: 0, warning: 1, normal: 2 };
+        return order[a.riskLevel] - order[b.riskLevel];
+      }),
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
   }),
+
+  resetToMockData: () => {
+    localStorage.removeItem(STORAGE_KEY);
+    set({
+      purchaseOrders: mockPurchaseOrders,
+      quotes: mockQuotes,
+      receipts: mockReceipts,
+      stockRecords: mockStockRecords,
+      stockMovements: mockStockMovements,
+      salesOrders: mockSalesOrders,
+      shipments: mockShipments,
+      payables: mockPayables,
+      stockRisks: mockStockRisks,
+    });
+  },
+
+  getPersistInfo: () => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return { lastSaved: null, hasPersistedData: false };
+      const data = JSON.parse(raw);
+      return { lastSaved: data.lastSaved || null, hasPersistedData: true };
+    } catch (e) {
+      return { lastSaved: null, hasPersistedData: false };
+    }
+  },
 }));

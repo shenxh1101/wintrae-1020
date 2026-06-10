@@ -17,6 +17,8 @@ import {
 } from 'recharts';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
+import isBetween from 'dayjs/plugin/isBetween';
+dayjs.extend(isBetween);
 import { useAppStore } from '../store/appStore';
 import { Payable, PaymentStatus, MonthlyPurchaseStat, StockTurnoverStat } from '../types';
 
@@ -97,9 +99,9 @@ export default function ReconciliationWindow() {
   const monthlyPurchaseData: MonthlyPurchaseStat[] = useMemo(() => {
     const data: MonthlyPurchaseStat[] = [];
     for (let m = 5; m >= 0; m--) {
-      const d = dayjs().subtract(m, 'month');
-      const monthStart = d.startOf('month');
-      const monthEnd = d.endOf('month');
+      const d = dayjs().subtract(m, 'month').clone();
+      const monthStart = d.clone().startOf('month');
+      const monthEnd = d.clone().endOf('month');
       const key = d.format('YYYY-MM');
 
       const monthPOs = purchaseOrders.filter(p => dayjs(p.createTime).isBetween(monthStart, monthEnd, null, '[]'));
@@ -125,9 +127,9 @@ export default function ReconciliationWindow() {
 
   // Stock turnover report
   const turnoverData: StockTurnoverStat[] = useMemo(() => {
-    const reportStart = reportMonth.startOf('month');
-    const reportEnd = reportMonth.endOf('month');
-    const lastMonthStart = reportStart.subtract(1, 'month');
+    const reportStart = reportMonth.clone().startOf('month');
+    const reportEnd = reportMonth.clone().endOf('month');
+    const lastMonthStart = reportStart.clone().subtract(1, 'month');
 
     return stockRecords.map(sr => {
       const inMoves = stockMovements.filter(m =>
@@ -581,7 +583,7 @@ export default function ReconciliationWindow() {
                       { title: '入库金额', dataIndex: 'receiptAmount', width: 130, align: 'right', render: v => `¥${v.toLocaleString()}` },
                       {
                         title: '准时交付率',
-                        dataKey: 'onTimeRate',
+                        dataIndex: 'onTimeRate',
                         width: 140,
                         render: v => (
                           <Progress
@@ -981,7 +983,6 @@ export default function ReconciliationWindow() {
                     prefix="¥"
                     precision={0}
                     valueStyle={{ color: detailModal.unpaidAmount > 0 ? '#cf1322' : '#52c41a' }}
-                    prefixCls="custom"
                   />
                 </Card>
               </Col>

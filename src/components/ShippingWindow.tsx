@@ -7,7 +7,7 @@ import {
 import {
   PlusOutlined, SearchOutlined, EyeOutlined,
   TruckOutlined, RocketOutlined, CheckCircleOutlined,
-  InfoCircleOutlined, PackageOutlined,
+  InfoCircleOutlined, InboxOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -178,9 +178,8 @@ export default function ShippingWindow() {
           )}
           {record.status === 'out_for_delivery' && (
             <Button
-              type="link"
-              size="small"
               type="primary"
+              size="small"
               onClick={() => pushStatus(record, 'delivered', {
                 time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
                 status: '已签收',
@@ -198,7 +197,7 @@ export default function ShippingWindow() {
 
   const pushStatus = (record: Shipment, targetStatus?: ShippingStatus, node?: LogisticsNode) => {
     const flow: ShippingStatus[] = ['created', 'picking', 'packed', 'shipped', 'in_transit'];
-    const nextStatusMap: Record<ShippingStatus, { status: ShippingStatus; node: LogisticsNode }> = {
+    const nextStatusMap: Partial<Record<ShippingStatus, { status: ShippingStatus; node: LogisticsNode }>> = {
       created: {
         status: 'picking',
         node: { time: dayjs().format('YYYY-MM-DD HH:mm:ss'), status: '拣货中', location: record.warehouse, description: '仓管人员正在拣货', operator: '周仓管' }
@@ -454,7 +453,7 @@ export default function ShippingWindow() {
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>
-              <PackageOutlined style={{ color: '#1677ff', marginRight: 6 }} />
+              <InboxOutlined style={{ color: '#1677ff', marginRight: 6 }} />
               发货单详情 - {detailModal?.shipmentNo}
             </span>
             {detailModal && <Tag color={statusConfig[detailModal.status].color}>{statusConfig[detailModal.status].text}</Tag>}

@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import {
   Table, Tag, Button, Select, Modal, Form, InputNumber, DatePicker,
-  Card, Row, Col, Divider, message, Input, Tabs, Radio,
+  Card, Row, Col, Divider, message, Input, Tabs, Radio, Space,
 } from 'antd';
 import {
   PlusOutlined, CheckOutlined, CloseOutlined,
@@ -511,7 +511,7 @@ export default function QuoteWindow() {
                       </div>
                     ),
                     width: 140,
-                    align: 'right',
+                    align: 'right' as const,
                     render: (_: any, row: any) => {
                       const qi = q.items.find(i => i.productId === row.productId);
                       if (!qi) return '-';

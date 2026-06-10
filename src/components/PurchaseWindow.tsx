@@ -374,7 +374,7 @@ export default function PurchaseWindow() {
                 { title: '数量', dataIndex: 'quantity', width: 80, align: 'right' },
                 { title: '单价', dataIndex: 'unitPrice', width: 100, align: 'right', render: v => v ? `¥${v}` : '-' },
                 { title: '小计', width: 110, align: 'right', render: (_, r) => r.unitPrice ? `¥${(r.quantity * r.unitPrice).toLocaleString()}` : '-' },
-                { title: '已到货', dataIndex: 'receivedQty', width: 90, align: 'right', render: v => `${v || 0}/${viewOrder.items[0].quantity || ''}` },
+                { title: '已到货', width: 100, align: 'right', render: (_, r: any) => `${r.receivedQty || 0}/${r.quantity}` },
                 { title: '合格/不合格', width: 130, align: 'center', render: (_, r) => <span>{r.acceptedQty || 0} / {r.rejectedQty || 0}</span> },
               ]}
             />

@@ -135,7 +135,7 @@ export default function ReceiptWindow() {
         };
       });
 
-      const totalAmount = items.reduce((s, i) => s + i.subtotal, 0);
+      const totalAmount = items.reduce((s: number, i: any) => s + i.subtotal, 0);
 
       addReceipt({
         purchaseOrderId: values.purchaseOrderId,

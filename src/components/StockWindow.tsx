@@ -128,7 +128,7 @@ export default function StockWindow() {
       title: '已分配',
       width: 100,
       align: 'right',
-      render: (v, r) => r.allocatedQty > 0
+      render: (v, r) => (r.allocatedQty || 0) > 0
         ? <Tag color="purple">{r.allocatedQty} {r.unit}</Tag>
         : <span style={{ color: '#bfbfbf' }}>-</span>,
     },
@@ -259,7 +259,7 @@ export default function StockWindow() {
       dataIndex: 'affectedOrders',
       width: 200,
       render: (v) => v && v.length > 0
-        ? v.map(o => <Tag key={o} color="blue">{o}</Tag>)
+        ? v.map((o: string) => <Tag key={o} color="blue">{o}</Tag>)
         : <span style={{ color: '#bfbfbf' }}>暂无</span>,
     },
   ];
