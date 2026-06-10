@@ -1,0 +1,34 @@
+{
+  "name": "supply-chain-desktop",
+  "version": "1.0.0",
+  "description": "供应链管理桌面客户端 - 中小制造企业采购、仓管、销售协同平台",
+  "main": "dist-electron/main.js",
+  "author": "SupplyChain Team",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
+    "build": "tsc && vite build && tsc -p tsconfig.electron.json",
+    "start": "electron .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "antd": "^5.12.8",
+    "@ant-design/icons": "^5.2.6",
+    "dayjs": "^1.11.10",
+    "recharts": "^2.10.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.4.7"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@types/node": "^20.10.5",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.0.8",
+    "typescript": "^5.2.2",
+    "electron": "^28.0.0",
+    "concurrently": "^8.2.2",
+    "wait-on": "^7.2.0",
+    "cross-env": "^7.0.3"
+  }
+}
