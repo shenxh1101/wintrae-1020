@@ -216,6 +216,9 @@ export interface Shipment {
   logistics: LogisticsNode[];
   warehouse: string;
   operator: string;
+  signoffTime?: string;
+  signoffPerson?: string;
+  signoffRemark?: string;
   remark?: string;
 }
 
@@ -297,4 +300,10 @@ export interface StockTurnoverStat {
   outAmount: number;
 }
 
-export type WindowKey = 'purchase' | 'quote' | 'receipt' | 'stock' | 'shipping' | 'reconciliation';
+export type WindowKey = 'purchase' | 'quote' | 'receipt' | 'stock' | 'shipping' | 'reconciliation' | 'sales';
+
+export interface SignoffInfo {
+  signoffTime?: string;
+  signoffPerson?: string;
+  signoffRemark?: string;
+}

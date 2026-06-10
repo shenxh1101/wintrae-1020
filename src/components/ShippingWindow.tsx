@@ -2,12 +2,12 @@ import { useState, useMemo } from 'react';
 import {
   Table, Tag, Button, Modal, Form, Input, Select, InputNumber,
   Card, Row, Col, Divider, message, Timeline, Steps, Badge,
-  Tooltip, Space, Popover,
+  Tooltip, Space, Popover, Checkbox, DatePicker,
 } from 'antd';
 import {
-  PlusOutlined, SearchOutlined, EyeOutlined,
+  PlusOutlined, SearchOutlined, EyeOutlined, EditOutlined,
   TruckOutlined, RocketOutlined, CheckCircleOutlined,
-  InfoCircleOutlined, InboxOutlined,
+  InfoCircleOutlined, InboxOutlined, UserOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -28,12 +28,14 @@ const statusConfig: Record<ShippingStatus, { color: string; text: string; step: 
 const carriers = ['顺丰速运', '德邦物流', '圆通速递', '中通快递', '京东物流', '跨越速运'];
 
 export default function ShippingWindow() {
-  const { shipments, salesOrders, stockRecords, createShipment, updateShipmentStatus } = useAppStore();
+  const { shipments, salesOrders, stockRecords, createShipment, updateShipmentStatus, updateShipmentSignoff } = useAppStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState<Shipment | null>(null);
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<ShippingStatus | undefined>();
+  const [signoffModalOpen, setSignoffModalOpen] = useState(false);
   const [form] = Form.useForm();
+  const [signoffForm] = Form.useForm();
 
   const stats = useMemo(() => {
     const thisMonth = dayjs().startOf('month');
@@ -232,17 +234,20 @@ export default function ShippingWindow() {
       const so = allocatedOrders.find(s => s.id === values.salesOrderId);
       if (!so) return;
 
-      const items = (values.items || []).filter((it: any) => it.qty > 0);
-      if (items.length === 0) {
-        message.warning('请至少选择一项发货');
+      const selectedItems = (values.items || [])
+        .map((it: any, idx: number) => ({
+          productId: so.items[idx].productId,
+          qty: it.selected ? (it.qty || 0) : 0,
+        }))
+        .filter((it: any) => it.qty > 0);
+
+      if (selectedItems.length === 0) {
+        message.warning('请勾选要发货的物料并填写数量');
         return;
       }
 
       createShipment(values.salesOrderId, {
-        items: items.map((it: any, idx: number) => ({
-          productId: so.items[idx].productId,
-          qty: it.qty,
-        })),
+        items: selectedItems,
         carrier: values.carrier,
         trackingNo: values.trackingNo,
       });
@@ -255,7 +260,48 @@ export default function ShippingWindow() {
     }
   };
 
+  const handleSignoffSubmit = async () => {
+    try {
+      const values = await signoffForm.validateFields();
+      if (!detailModal) return;
+
+      updateShipmentSignoff(detailModal.id, {
+        signoffTime: values.signoffTime.format('YYYY-MM-DD HH:mm:ss'),
+        signoffPerson: values.signoffPerson,
+        signoffRemark: values.signoffRemark,
+      });
+
+      message.success('签收信息已保存');
+      setSignoffModalOpen(false);
+      signoffForm.resetFields();
+    } catch (e) {
+      //
+    }
+  };
+
+  const openSignoffModal = () => {
+    if (!detailModal) return;
+    signoffForm.setFieldsValue({
+      signoffTime: detailModal.signoffTime ? dayjs(detailModal.signoffTime) : dayjs(),
+      signoffPerson: detailModal.signoffPerson || '',
+      signoffRemark: detailModal.signoffRemark || '',
+    });
+    setSignoffModalOpen(true);
+  };
+
   const shipColumns: ColumnsType<any> = [
+    {
+      title: '选择',
+      width: 50,
+      render: (_, r, idx) => {
+        const pending = (r.allocatedQty || 0) - (r.shippedQty || 0);
+        return (
+          <Form.Item name={['items', idx, 'selected']} style={{ marginBottom: 0 }} initialValue={pending > 0}>
+            <Checkbox disabled={pending <= 0} />
+          </Form.Item>
+        );
+      },
+    },
     {
       title: '物料',
       dataIndex: 'productName',
@@ -397,7 +443,10 @@ export default function ShippingWindow() {
                 const so = allocatedOrders.find(s => s.id === soId);
                 if (so) {
                   form.setFieldsValue({
-                    items: so.items.map(i => ({ qty: Math.max(0, (i.allocatedQty || 0) - (i.shippedQty || 0)) }))
+                    items: so.items.map(i => {
+                      const pending = Math.max(0, (i.allocatedQty || 0) - (i.shippedQty || 0));
+                      return { selected: pending > 0, qty: pending };
+                    })
                   });
                 }
               }}
@@ -462,7 +511,19 @@ export default function ShippingWindow() {
         open={!!detailModal}
         onCancel={() => setDetailModal(null)}
         width={900}
-        footer={[<Button key="close" onClick={() => setDetailModal(null)}>关闭</Button>]}
+        footer={[
+          detailModal && detailModal.status === 'delivered' && (
+            <Button
+              key="signoff"
+              type="primary"
+              icon={<EditOutlined />}
+              onClick={openSignoffModal}
+            >
+              {detailModal.signoffPerson ? '修改签收信息' : '补录签收信息'}
+            </Button>
+          ),
+          <Button key="close" onClick={() => setDetailModal(null)}>关闭</Button>,
+        ]}
       >
         {detailModal && (
           <div>
@@ -486,6 +547,14 @@ export default function ShippingWindow() {
                   {detailModal.actualArrival && <p style={{ color: '#389e0d', fontWeight: 600 }}>
                     <CheckCircleOutlined /> <strong>实际签收：</strong>{detailModal.actualArrival}
                   </p>}
+                  {detailModal.signoffPerson && (
+                    <>
+                      <Divider style={{ margin: '8px 0' }} />
+                      <p><UserOutlined style={{ color: '#52c41a', marginRight: 4 }} /> <strong>签收人：</strong>{detailModal.signoffPerson}</p>
+                      {detailModal.signoffTime && <p><strong>签收时间：</strong>{detailModal.signoffTime}</p>}
+                      {detailModal.signoffRemark && <p><strong>签收备注：</strong>{detailModal.signoffRemark}</p>}
+                    </>
+                  )}
                   {detailModal.remark && <p><strong>备注：</strong>{detailModal.remark}</p>}
                 </Card>
               </Col>
@@ -552,6 +621,51 @@ export default function ShippingWindow() {
             </Card>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title={
+          <div>
+            <EditOutlined style={{ color: '#1677ff', marginRight: 6 }} />
+            {detailModal?.signoffPerson ? '修改签收信息' : '补录签收信息'}
+          </div>
+        }
+        open={signoffModalOpen}
+        onOk={handleSignoffSubmit}
+        onCancel={() => { setSignoffModalOpen(false); signoffForm.resetFields(); }}
+        width={500}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Form form={signoffForm} layout="vertical">
+          <Form.Item
+            name="signoffTime"
+            label="签收时间"
+            rules={[{ required: true, message: '请选择签收时间' }]}
+          >
+            <DatePicker
+              showTime
+              style={{ width: '100%' }}
+              placeholder="选择签收时间"
+              format="YYYY-MM-DD HH:mm:ss"
+            />
+          </Form.Item>
+          <Form.Item
+            name="signoffPerson"
+            label="签收人"
+            rules={[{ required: true, message: '请填写签收人' }]}
+          >
+            <Input placeholder="请输入签收人姓名" prefix={<UserOutlined />} />
+          </Form.Item>
+          <Form.Item name="signoffRemark" label="签收备注">
+            <Input.TextArea
+              rows={3}
+              placeholder="请输入签收备注（可选）"
+              maxLength={200}
+              showCount
+            />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );

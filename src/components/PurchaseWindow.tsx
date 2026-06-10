@@ -2,15 +2,18 @@ import { useState, useMemo } from 'react';
 import {
   Table, Tag, Button, Input, Select, DatePicker, Space, Modal, Form,
   InputNumber, Card, Row, Col, Statistic, Divider, message, Popconfirm,
+  Tabs, Timeline,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, EyeOutlined, EditOutlined,
-  DeleteOutlined, CheckCircleOutlined,
+  DeleteOutlined, CheckCircleOutlined, ClockCircleOutlined,
+  FileSearchOutlined, InboxOutlined, DollarOutlined,
+  ShoppingCartOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useAppStore } from '../store/appStore';
-import { PurchaseOrder, PurchaseStatus } from '../types';
+import { PurchaseOrder, PurchaseStatus, SupplierQuote, WarehouseReceipt, Payable } from '../types';
 
 const { RangePicker } = DatePicker;
 
@@ -25,7 +28,7 @@ const statusMap: Record<PurchaseStatus, { color: string; text: string }> = {
 };
 
 export default function PurchaseWindow() {
-  const { purchaseOrders, suppliers, products, addPurchaseOrder, updatePurchaseOrder } = useAppStore();
+  const { purchaseOrders, suppliers, products, quotes, receipts, payables, addPurchaseOrder, updatePurchaseOrder } = useAppStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [viewOrder, setViewOrder] = useState<PurchaseOrder | null>(null);
   const [keyword, setKeyword] = useState('');
@@ -55,6 +58,118 @@ export default function PurchaseWindow() {
       return true;
     });
   }, [purchaseOrders, keyword, statusFilter, dateRange]);
+
+  const relatedQuotes = useMemo(() => {
+    if (!viewOrder) return [];
+    return quotes.filter(q => q.purchaseOrderId === viewOrder.id);
+  }, [viewOrder, quotes]);
+
+  const relatedReceipts = useMemo(() => {
+    if (!viewOrder) return [];
+    return receipts.filter(r => r.purchaseOrderId === viewOrder.id);
+  }, [viewOrder, receipts]);
+
+  const relatedPayables = useMemo(() => {
+    if (!viewOrder) return [];
+    return payables.filter(p => p.purchaseOrderId === viewOrder.id);
+  }, [viewOrder, payables]);
+
+  const timelineEvents = useMemo(() => {
+    if (!viewOrder) return [];
+    const events: { time: string; color: string; icon: any; title: string; description: string }[] = [];
+
+    events.push({
+      time: viewOrder.createTime,
+      color: 'blue',
+      icon: <ShoppingCartOutlined />,
+      title: '创建采购需求',
+      description: `${viewOrder.requester} 提交采购申请，共 ${viewOrder.items.length} 项物料`,
+    });
+
+    if (viewOrder.status !== 'draft') {
+      const quoteSubmitted = relatedQuotes.length > 0;
+      if (quoteSubmitted) {
+        const firstQuote = relatedQuotes[0];
+        events.push({
+          time: firstQuote.submitTime,
+          color: 'purple',
+          icon: <FileSearchOutlined />,
+          title: '收到供应商报价',
+          description: `共收到 ${relatedQuotes.length} 家供应商报价，${firstQuote.supplierName} 报价 ¥${firstQuote.totalAmount.toLocaleString()}`,
+        });
+      }
+
+      const acceptedQuote = relatedQuotes.find(q => q.status === 'accepted');
+      if (acceptedQuote) {
+        events.push({
+          time: viewOrder.confirmedDate || viewOrder.createTime,
+          color: 'green',
+          icon: <CheckCircleOutlined />,
+          title: '确认采购',
+          description: `采纳 ${acceptedQuote.supplierName} 的报价，总金额 ¥${acceptedQuote.totalAmount.toLocaleString()}`,
+        });
+      }
+
+      if (relatedReceipts.length > 0) {
+        relatedReceipts.forEach(r => {
+          events.push({
+            time: r.receivedDate,
+            color: 'cyan',
+            icon: <InboxOutlined />,
+            title: '入库验收',
+            description: `入库单 ${r.receiptNo}，${r.items.length} 项物料，总金额 ¥${r.totalAmount.toLocaleString()}`,
+          });
+        });
+      }
+
+      if (relatedPayables.length > 0) {
+        relatedPayables.forEach(p => {
+          const statusText = p.status === 'paid' ? '已结清' : (p.status === 'partial' ? '部分付款' : '待付款');
+          const statusColor = p.status === 'paid' ? 'green' : (p.status === 'partial' ? 'orange' : 'red');
+          events.push({
+            time: p.billDate,
+            color: statusColor,
+            icon: <DollarOutlined />,
+            title: `应付账单 - ${statusText}`,
+            description: `账单 ${p.billNo}，总金额 ¥${p.totalAmount.toLocaleString()}，已付 ¥${p.paidAmount.toLocaleString()}`,
+          });
+
+          p.payments.forEach(pay => {
+            events.push({
+              time: pay.date,
+              color: 'green',
+              icon: <DollarOutlined />,
+              title: '登记付款',
+              description: `支付 ¥${pay.amount.toLocaleString()}，${pay.method}${pay.reference ? `，单号：${pay.reference}` : ''}`,
+            });
+          });
+        });
+      }
+    }
+
+    if (viewOrder.status === 'completed') {
+      const lastEvent = events[events.length - 1];
+      events.push({
+        time: lastEvent?.time || viewOrder.createTime,
+        color: 'success',
+        icon: <CheckCircleOutlined />,
+        title: '订单完成',
+        description: '采购单已全部完成',
+      });
+    }
+
+    if (viewOrder.status === 'cancelled') {
+      events.push({
+        time: viewOrder.createTime,
+        color: 'red',
+        icon: <DeleteOutlined />,
+        title: '订单取消',
+        description: '采购单已取消',
+      });
+    }
+
+    return events.sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf());
+  }, [viewOrder, relatedQuotes, relatedReceipts, relatedPayables]);
 
   const columns: ColumnsType<PurchaseOrder> = [
     { title: '订单号', dataIndex: 'orderNo', width: 160, fixed: 'left' },
@@ -339,52 +454,278 @@ export default function PurchaseWindow() {
         footer={[
           <Button key="close" onClick={() => setViewOrder(null)}>关闭</Button>,
         ]}
-        width={720}
+        width={900}
       >
         {viewOrder && (
-          <div>
-            <Row gutter={24}>
-              <Col span={12}>
-                <p><strong>标题：</strong>{viewOrder.title}</p>
-                <p><strong>状态：</strong>
-                  <Tag color={statusMap[viewOrder.status].color}>{statusMap[viewOrder.status].text}</Tag>
-                </p>
-                <p><strong>供应商：</strong>{viewOrder.supplierName || '待确定'}</p>
-                <p><strong>总金额：</strong>
-                  {viewOrder.totalAmount ? <span style={{ color: '#cf1322', fontWeight: 600 }}>¥{viewOrder.totalAmount.toLocaleString()}</span> : '待报价'}
-                </p>
-              </Col>
-              <Col span={12}>
-                <p><strong>申请人：</strong>{viewOrder.requester} / {viewOrder.department}</p>
-                <p><strong>创建时间：</strong>{viewOrder.createTime}</p>
-                <p><strong>需求日期：</strong>{viewOrder.requiredDate}</p>
-                {viewOrder.confirmedDate && <p><strong>确认日期：</strong>{viewOrder.confirmedDate}</p>}
-              </Col>
-            </Row>
-            <Divider />
-            <div className="modal-section-title">采购明细</div>
-            <Table
-              size="small"
-              dataSource={viewOrder.items}
-              rowKey="productId"
-              pagination={false}
-              columns={[
-                { title: '物料名称', dataIndex: 'productName' },
-                { title: 'SKU', dataIndex: 'sku', width: 120 },
-                { title: '数量', dataIndex: 'quantity', width: 80, align: 'right' },
-                { title: '单价', dataIndex: 'unitPrice', width: 100, align: 'right', render: v => v ? `¥${v}` : '-' },
-                { title: '小计', width: 110, align: 'right', render: (_, r) => r.unitPrice ? `¥${(r.quantity * r.unitPrice).toLocaleString()}` : '-' },
-                { title: '已到货', width: 100, align: 'right', render: (_, r: any) => `${r.receivedQty || 0}/${r.quantity}` },
-                { title: '合格/不合格', width: 130, align: 'center', render: (_, r) => <span>{r.acceptedQty || 0} / {r.rejectedQty || 0}</span> },
-              ]}
-            />
-            {viewOrder.remark && (
-              <>
-                <Divider />
-                <p><strong>备注：</strong>{viewOrder.remark}</p>
-              </>
-            )}
-          </div>
+          <Tabs
+            defaultActiveKey="basic"
+            items={[
+              {
+                key: 'basic',
+                label: '基本信息',
+                children: (
+                  <div>
+                    <Row gutter={24}>
+                      <Col span={12}>
+                        <p><strong>标题：</strong>{viewOrder.title}</p>
+                        <p><strong>状态：</strong>
+                          <Tag color={statusMap[viewOrder.status].color}>{statusMap[viewOrder.status].text}</Tag>
+                        </p>
+                        <p><strong>供应商：</strong>{viewOrder.supplierName || '待确定'}</p>
+                        <p><strong>总金额：</strong>
+                          {viewOrder.totalAmount ? <span style={{ color: '#cf1322', fontWeight: 600 }}>¥{viewOrder.totalAmount.toLocaleString()}</span> : '待报价'}
+                        </p>
+                      </Col>
+                      <Col span={12}>
+                        <p><strong>申请人：</strong>{viewOrder.requester} / {viewOrder.department}</p>
+                        <p><strong>创建时间：</strong>{viewOrder.createTime}</p>
+                        <p><strong>需求日期：</strong>{viewOrder.requiredDate}</p>
+                        {viewOrder.confirmedDate && <p><strong>确认日期：</strong>{viewOrder.confirmedDate}</p>}
+                      </Col>
+                    </Row>
+                    <Divider />
+                    <div className="modal-section-title">采购明细</div>
+                    <Table
+                      size="small"
+                      dataSource={viewOrder.items}
+                      rowKey="productId"
+                      pagination={false}
+                      columns={[
+                        { title: '物料名称', dataIndex: 'productName' },
+                        { title: 'SKU', dataIndex: 'sku', width: 120 },
+                        { title: '数量', dataIndex: 'quantity', width: 80, align: 'right' },
+                        { title: '单价', dataIndex: 'unitPrice', width: 100, align: 'right', render: v => v ? `¥${v}` : '-' },
+                        { title: '小计', width: 110, align: 'right', render: (_, r) => r.unitPrice ? `¥${(r.quantity * r.unitPrice).toLocaleString()}` : '-' },
+                        { title: '已到货', width: 100, align: 'right', render: (_, r: any) => `${r.receivedQty || 0}/${r.quantity}` },
+                        { title: '合格/不合格', width: 130, align: 'center', render: (_, r) => <span>{r.acceptedQty || 0} / {r.rejectedQty || 0}</span> },
+                      ]}
+                    />
+                    {viewOrder.remark && (
+                      <>
+                        <Divider />
+                        <p><strong>备注：</strong>{viewOrder.remark}</p>
+                      </>
+                    )}
+                  </div>
+                ),
+              },
+              {
+                key: 'timeline',
+                label: '流程时间线',
+                children: (
+                  <div style={{ padding: '10px 20px' }}>
+                    <Timeline
+                      mode="left"
+                      items={timelineEvents.map((e, idx) => ({
+                        key: idx,
+                        color: e.color,
+                        dot: e.icon,
+                        children: (
+                          <div>
+                            <div style={{ fontWeight: 600 }}>{e.title}</div>
+                            <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 2 }}>{e.description}</div>
+                            <div style={{ fontSize: 11, color: '#bfbfbf', marginTop: 4 }}>{e.time}</div>
+                          </div>
+                        ),
+                      }))}
+                    />
+                  </div>
+                ),
+              },
+              {
+                key: 'quotes',
+                label: `关联报价 (${relatedQuotes.length})`,
+                children: (
+                  relatedQuotes.length > 0 ? (
+                    <div>
+                      {relatedQuotes.map((q: SupplierQuote) => (
+                        <Card key={q.id} size="small" style={{ marginBottom: 12 }} title={
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>{q.supplierName}</span>
+                            <Tag color={
+                              q.status === 'accepted' ? 'green' : q.status === 'rejected' ? 'red' : 'blue'
+                            }>
+                              {q.status === 'accepted' ? '已采纳' : q.status === 'rejected' ? '已拒绝' : '待确认'}
+                            </Tag>
+                          </div>
+                        }>
+                          <Row>
+                            <Col span={8}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>报价单号</small><br /><strong>{q.id}</strong></p>
+                            </Col>
+                            <Col span={8}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>报价时间</small><br /><strong>{q.submitTime}</strong></p>
+                            </Col>
+                            <Col span={8}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>总金额</small><br /><strong style={{ color: '#cf1322' }}>¥{q.totalAmount.toLocaleString()}</strong></p>
+                            </Col>
+                          </Row>
+                          <Table
+                            size="small"
+                            dataSource={q.items}
+                            rowKey="productId"
+                            pagination={false}
+                            columns={[
+                              { title: '物料名称', dataIndex: 'productName' },
+                              { title: 'SKU', dataIndex: 'sku', width: 120 },
+                              { title: '数量', dataIndex: 'quantity', width: 70, align: 'right' },
+                              { title: '单价', dataIndex: 'unitPrice', width: 90, align: 'right', render: v => `¥${v}` },
+                              { title: '小计', width: 100, align: 'right', render: (_, r) => `¥${r.subtotal.toLocaleString()}` },
+                              { title: '交货期(天)', dataIndex: 'leadTime', width: 100, align: 'center' },
+                            ]}
+                          />
+                          <Row style={{ marginTop: 8, fontSize: 12 }}>
+                            <Col span={12}>有效期至: {q.validUntil}</Col>
+                            <Col span={12} style={{ textAlign: 'right' }}>
+                              {q.taxAmount !== undefined && <span style={{ marginRight: 16 }}>税额: ¥{q.taxAmount}</span>}
+                              {q.shippingFee !== undefined && <span>运费: ¥{q.shippingFee}</span>}
+                            </Col>
+                          </Row>
+                          {q.remark && <p style={{ marginTop: 8, fontSize: 12 }}><strong>备注: </strong>{q.remark}</p>}
+                        </Card>
+                      ))}
+                    </div>
+                  ) : <div style={{ padding: 40, textAlign: 'center', color: '#8c8c8c' }}>暂无关联报价</div>
+                ),
+              },
+              {
+                key: 'receipts',
+                label: `关联入库 (${relatedReceipts.length})`,
+                children: (
+                  relatedReceipts.length > 0 ? (
+                    <div>
+                      {relatedReceipts.map((r: WarehouseReceipt) => (
+                        <Card key={r.id} size="small" style={{ marginBottom: 12 }} title={
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>入库单 {r.receiptNo}</span>
+                            <Tag color="green">已入库</Tag>
+                          </div>
+                        }>
+                          <Row>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>供应商</small><br /><strong>{r.supplierName}</strong></p>
+                            </Col>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>入库日期</small><br /><strong>{r.receivedDate}</strong></p>
+                            </Col>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>仓库</small><br /><strong>{r.warehouse}</strong></p>
+                            </Col>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>总金额</small><br /><strong style={{ color: '#cf1322' }}>¥{r.totalAmount.toLocaleString()}</strong></p>
+                            </Col>
+                          </Row>
+                          <Table
+                            size="small"
+                            dataSource={r.items}
+                            rowKey="productId"
+                            pagination={false}
+                            columns={[
+                              { title: '物料名称', dataIndex: 'productName' },
+                              { title: 'SKU', dataIndex: 'sku', width: 120 },
+                              { title: '应收', dataIndex: 'expectedQty', width: 60, align: 'right' },
+                              { title: '实收', dataIndex: 'actualQty', width: 60, align: 'right' },
+                              { title: '合格', dataIndex: 'acceptedQty', width: 60, align: 'right' },
+                              { title: '不合格', dataIndex: 'rejectedQty', width: 60, align: 'right' },
+                              { title: '质检', width: 70, align: 'center', render: (_, ri) => (
+                                <Tag color={ri.qcResult === 'pass' ? 'green' : ri.qcResult === 'fail' ? 'red' : 'orange'}>
+                                  {ri.qcResult === 'pass' ? '合格' : ri.qcResult === 'fail' ? '不合格' : '部分'}
+                                </Tag>
+                              )},
+                              { title: '单价', width: 80, align: 'right', render: v => `¥${v.unitPrice}` },
+                              { title: '小计', width: 100, align: 'right', render: (_, ri) => `¥${ri.subtotal.toLocaleString()}` },
+                            ]}
+                          />
+                          <Row style={{ marginTop: 8, fontSize: 12 }}>
+                            <Col span={12}>收货人: {r.receiver} | 检验员: {r.inspector}</Col>
+                          </Row>
+                          {r.remark && <p style={{ marginTop: 8, fontSize: 12 }}><strong>备注: </strong>{r.remark}</p>}
+                        </Card>
+                      ))}
+                    </div>
+                  ) : <div style={{ padding: 40, textAlign: 'center', color: '#8c8c8c' }}>暂无关联入库单</div>
+                ),
+              },
+              {
+                key: 'payables',
+                label: `应付账单 (${relatedPayables.length})`,
+                children: (
+                  relatedPayables.length > 0 ? (
+                    <div>
+                      {relatedPayables.map((p: Payable) => (
+                        <Card key={p.id} size="small" style={{ marginBottom: 12 }} title={
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>应付账单 {p.billNo}</span>
+                            <Tag color={
+                              p.status === 'paid' ? 'green' : p.status === 'partial' ? 'orange' : 'red'
+                            }>
+                              {p.status === 'paid' ? '已结清' : p.status === 'partial' ? '部分付款' : '待付款'}
+                            </Tag>
+                          </div>
+                        }>
+                          <Row gutter={16}>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>供应商</small><br /><strong>{p.supplierName}</strong></p>
+                            </Col>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>账单日期</small><br /><strong>{p.billDate}</strong></p>
+                            </Col>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>到期日期</small><br /><strong>{p.dueDate}</strong></p>
+                            </Col>
+                            <Col span={6}>
+                              <p style={{ margin: '4px 0' }}><small style={{ color: '#8c8c8c' }}>应付金额</small><br /><strong style={{ color: '#cf1322' }}>¥{p.totalAmount.toLocaleString()}</strong></p>
+                            </Col>
+                          </Row>
+                          <Row gutter={16}>
+                            <Col span={8}>
+                              <Card size="small" style={{ background: '#fff2e8' }}>
+                                <div style={{ fontSize: 12, color: '#8c8c8c' }}>已付金额</div>
+                                <div style={{ fontSize: 18, fontWeight: 700, color: '#52c41a' }}>¥{p.paidAmount.toLocaleString()}</div>
+                              </Card>
+                            </Col>
+                            <Col span={8}>
+                              <Card size="small" style={{ background: '#fff1f0' }}>
+                                <div style={{ fontSize: 12, color: '#8c8c8c' }}>未付金额</div>
+                                <div style={{ fontSize: 18, fontWeight: 700, color: '#cf1322' }}>¥{p.unpaidAmount.toLocaleString()}</div>
+                              </Card>
+                            </Col>
+                            <Col span={8}>
+                              <Card size="small" style={{ background: '#f6ffed' }}>
+                                <div style={{ fontSize: 12, color: '#8c8c8c' }}>付款进度</div>
+                                <div style={{ fontSize: 18, fontWeight: 700, color: '#389e0d' }}>
+                                  {Math.round((p.paidAmount / p.totalAmount) * 100)}%
+                                </div>
+                              </Card>
+                            </Col>
+                          </Row>
+                          {p.payments.length > 0 && (
+                            <>
+                              <div className="modal-section-title" style={{ marginTop: 12 }}>付款记录</div>
+                              <Table
+                                size="small"
+                                dataSource={p.payments}
+                                rowKey="date"
+                                pagination={false}
+                                columns={[
+                                  { title: '付款日期', dataIndex: 'date', width: 120 },
+                                  { title: '付款方式', dataIndex: 'method', width: 120 },
+                                  { title: '金额', dataIndex: 'amount', width: 120, align: 'right', render: v => `¥${v.toLocaleString()}` },
+                                  { title: '凭证号', dataIndex: 'reference', width: 150 },
+                                  { title: '备注', dataIndex: 'remark' },
+                                ]}
+                              />
+                            </>
+                          )}
+                          {p.remark && <p style={{ marginTop: 12, fontSize: 12 }}><strong>备注: </strong>{p.remark}</p>}
+                        </Card>
+                      ))}
+                    </div>
+                  ) : <div style={{ padding: 40, textAlign: 'center', color: '#8c8c8c' }}>暂无应付账单</div>
+                ),
+              },
+            ]}
+          />
         )}
       </Modal>
     </div>

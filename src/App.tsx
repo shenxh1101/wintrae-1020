@@ -3,7 +3,7 @@ import { Layout, Menu, Avatar, Badge, Dropdown } from 'antd';
 import {
   ShoppingCartOutlined, FileSearchOutlined, InboxOutlined,
   StockOutlined, TruckOutlined, CalculatorOutlined,
-  BellOutlined, UserOutlined, WarningOutlined,
+  BellOutlined, UserOutlined, WarningOutlined, UserSwitchOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { WindowKey } from './types';
@@ -14,10 +14,12 @@ import ReceiptWindow from './components/ReceiptWindow';
 import StockWindow from './components/StockWindow';
 import ShippingWindow from './components/ShippingWindow';
 import ReconciliationWindow from './components/ReconciliationWindow';
+import SalesOrderWindow from './components/SalesOrderWindow';
 
 const { Sider, Header, Content } = Layout;
 
 const menuItems: MenuProps['items'] = [
+  { key: 'sales', icon: <UserSwitchOutlined />, label: '销售订单' },
   { key: 'purchase', icon: <ShoppingCartOutlined />, label: '采购计划' },
   { key: 'quote', icon: <FileSearchOutlined />, label: '供应商报价' },
   { key: 'receipt', icon: <InboxOutlined />, label: '入库验收' },
@@ -27,6 +29,7 @@ const menuItems: MenuProps['items'] = [
 ];
 
 const windowTitles: Record<WindowKey, { title: string; subtitle: string }> = {
+  sales: { title: '销售订单', subtitle: '客户订单管理、订单跟踪、发货状态查询' },
   purchase: { title: '采购计划', subtitle: '创建采购需求、确认交期、跟踪订单进度' },
   quote: { title: '供应商报价', subtitle: '收集多家报价、横向比价、选择最优供应商' },
   receipt: { title: '入库验收', subtitle: '登记到货数量、记录质检结果、自动更新库存' },
@@ -42,6 +45,7 @@ export default function App() {
 
   const renderWindow = () => {
     switch (activeKey) {
+      case 'sales': return <SalesOrderWindow />;
       case 'purchase': return <PurchaseWindow />;
       case 'quote': return <QuoteWindow />;
       case 'receipt': return <ReceiptWindow />;

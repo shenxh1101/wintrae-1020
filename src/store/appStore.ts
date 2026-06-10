@@ -48,6 +48,10 @@ interface AppState {
 
   addReceipt: (receipt: Omit<WarehouseReceipt, 'id' | 'receiptNo'>) => void;
 
+  addSalesOrder: (order: Omit<SalesOrder, 'id' | 'orderNo' | 'createTime' | 'status'>) => void;
+  updateSalesOrder: (id: string, updates: Partial<SalesOrder>) => void;
+  deleteSalesOrder: (id: string) => void;
+
   allocateStock: (salesOrderId: string, allocations: { productId: string; qty: number }[]) => void;
   releaseAllocation: (salesOrderId: string) => void;
 
@@ -57,6 +61,7 @@ interface AppState {
     trackingNo?: string;
   }) => void;
   updateShipmentStatus: (shipmentId: string, status: ShippingStatus, node: LogisticsNode) => void;
+  updateShipmentSignoff: (shipmentId: string, signoffInfo: { signoffTime: string; signoffPerson: string; signoffRemark?: string }) => void;
 
   addPayment: (payableId: string, payment: { amount: number; method: string; reference?: string; remark?: string }) => void;
 
@@ -391,6 +396,69 @@ export const useAppStore = create<AppState>((set, get) => ({
     return newState;
   }),
 
+  addSalesOrder: (orderData) => set((state) => {
+    const now = new Date();
+    const seq = state.salesOrders.filter(s => {
+      const d = new Date(s.createTime);
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    }).length + 1;
+
+    const items = orderData.items.map(i => ({
+      ...i,
+      allocatedQty: 0,
+      shippedQty: 0,
+    }));
+
+    const newOrder: SalesOrder = {
+      ...orderData,
+      id: generateId('SO'),
+      orderNo: generateOrderNo('SO', now, seq),
+      createTime: today(),
+      status: 'pending_allocation',
+      items,
+    };
+
+    const newState = { salesOrders: [newOrder, ...state.salesOrders] };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
+
+  updateSalesOrder: (id, updates) => set((state) => {
+    const newState = {
+      salesOrders: state.salesOrders.map(s =>
+        s.id === id ? { ...s, ...updates } : s
+      )
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
+
+  deleteSalesOrder: (id) => set((state) => {
+    const so = state.salesOrders.find(s => s.id === id);
+    if (!so) return state;
+
+    let updatedStocks = [...state.stockRecords];
+    so.items.forEach(item => {
+      const allocQty = item.allocatedQty || 0;
+      if (allocQty > 0) {
+        const stockIdx = updatedStocks.findIndex(s => s.productId === item.productId);
+        if (stockIdx >= 0) {
+          updatedStocks[stockIdx] = {
+            ...updatedStocks[stockIdx],
+            allocatedQty: Math.max(0, (updatedStocks[stockIdx].allocatedQty || 0) - allocQty),
+          };
+        }
+      }
+    });
+
+    const newState = {
+      salesOrders: state.salesOrders.filter(s => s.id !== id),
+      stockRecords: updatedStocks,
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
+
   allocateStock: (salesOrderId, allocations) => set((state) => {
     const so = state.salesOrders.find(s => s.id === salesOrderId);
     if (!so) return state;
@@ -616,6 +684,23 @@ export const useAppStore = create<AppState>((set, get) => ({
               shipTime: ['shipped', 'in_transit', 'out_for_delivery', 'delivered'].includes(status) && !sh.shipTime
                 ? today() : sh.shipTime,
               actualArrival: status === 'delivered' ? today() : sh.actualArrival,
+            }
+          : sh
+      )
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
+
+  updateShipmentSignoff: (shipmentId, signoffInfo) => set((state) => {
+    const newState = {
+      shipments: state.shipments.map(sh =>
+        sh.id === shipmentId
+          ? {
+              ...sh,
+              signoffTime: signoffInfo.signoffTime,
+              signoffPerson: signoffInfo.signoffPerson,
+              signoffRemark: signoffInfo.signoffRemark,
             }
           : sh
       )

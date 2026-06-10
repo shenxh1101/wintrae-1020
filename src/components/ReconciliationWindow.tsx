@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import {
   Table, Tag, Button, Modal, Form, InputNumber, Select, Input,
   Card, Row, Col, Divider, message, Tabs, DatePicker, Statistic,
-  Tooltip, Space, Progress, Collapse, Empty,
+  Tooltip, Space, Progress, Collapse, Empty, Radio,
 } from 'antd';
 import {
   SearchOutlined, PlusOutlined, EyeOutlined,
@@ -33,14 +33,26 @@ const paymentStatusMap: Record<PaymentStatus, { color: string; text: string }> =
 const COLORS = ['#1677ff', '#52c41a', '#faad14', '#722ed1', '#eb2f96', '#13c2c2', '#fa8c16'];
 
 export default function ReconciliationWindow() {
-  const { payables, suppliers, addPayment, receipts, stockRecords, stockMovements, purchaseOrders } = useAppStore();
+  const { payables, suppliers, addPayment, receipts, stockRecords, stockMovements, purchaseOrders, products } = useAppStore();
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<PaymentStatus | undefined>();
   const [supplierFilter, setSupplierFilter] = useState<string | undefined>();
   const [paymentModal, setPaymentModal] = useState<Payable | null>(null);
   const [detailModal, setDetailModal] = useState<Payable | null>(null);
   const [reportMonth, setReportMonth] = useState<dayjs.Dayjs>(dayjs());
+  const [purchaseReportPeriod, setPurchaseReportPeriod] = useState<'month' | 'quarter'>('month');
+  const [purchaseReportDate, setPurchaseReportDate] = useState<dayjs.Dayjs>(dayjs());
+  const [turnoverCategoryFilter, setTurnoverCategoryFilter] = useState<string | undefined>();
+  const [turnoverWarehouseFilter, setTurnoverWarehouseFilter] = useState<string | undefined>();
   const [form] = Form.useForm();
+
+  const categories = useMemo(() => {
+    return [...new Set(products.map(p => p.category))];
+  }, [products]);
+
+  const warehouses = useMemo(() => {
+    return [...new Set(stockRecords.map(s => s.warehouse))];
+  }, [stockRecords]);
 
   const stats = useMemo(() => {
     const totalPayable = payables.reduce((s, p) => s + p.totalAmount, 0);
@@ -95,50 +107,76 @@ export default function ReconciliationWindow() {
     }).sort((a, b) => dayjs(a.dueDate).valueOf() - dayjs(b.dueDate).valueOf());
   }, [payables, keyword, statusFilter, supplierFilter]);
 
-  // Monthly purchase report
+  // Monthly purchase report - supports month/quarter selection
   const monthlyPurchaseData: MonthlyPurchaseStat[] = useMemo(() => {
     const data: MonthlyPurchaseStat[] = [];
-    for (let m = 5; m >= 0; m--) {
-      const d = dayjs().subtract(m, 'month').clone();
-      const monthStart = d.clone().startOf('month');
-      const monthEnd = d.clone().endOf('month');
-      const key = d.format('YYYY-MM');
+    const periods = purchaseReportPeriod === 'month' ? 6 : 4;
+    const step = purchaseReportPeriod === 'month' ? 1 : 3;
 
-      const monthPOs = purchaseOrders.filter(p => dayjs(p.createTime).isBetween(monthStart, monthEnd, null, '[]'));
-      const monthReceipts = receipts.filter(r => dayjs(r.receivedDate).isBetween(monthStart, monthEnd, null, '[]'));
-      const suppliersSet = new Set(monthPOs.map(p => p.supplierId).filter(Boolean));
+    for (let p = periods - 1; p >= 0; p--) {
+      let periodStart: dayjs.Dayjs;
+      let periodEnd: dayjs.Dayjs;
+      let key: string;
+
+      if (purchaseReportPeriod === 'month') {
+        const d = purchaseReportDate.subtract(p, 'month').clone();
+        periodStart = d.clone().startOf('month');
+        periodEnd = d.clone().endOf('month');
+        key = d.format('YYYY-MM');
+      } else {
+        const baseQuarter = Math.floor((purchaseReportDate.month()) / 3);
+        const targetQuarter = baseQuarter - p;
+        const yearAdjust = targetQuarter < 0 ? Math.floor(targetQuarter / 4) : 0;
+        const quarter = ((targetQuarter % 4) + 4) % 4;
+        const year = purchaseReportDate.year() + yearAdjust;
+
+        periodStart = dayjs(`${year}-${quarter * 3 + 1}-01`).startOf('month');
+        periodEnd = dayjs(`${year}-${quarter * 3 + 3}-01`).endOf('month');
+        key = `${year}Q${quarter + 1}`;
+      }
+
+      const periodPOs = purchaseOrders.filter(po => dayjs(po.createTime).isBetween(periodStart, periodEnd, null, '[]'));
+      const periodReceipts = receipts.filter(r => dayjs(r.receivedDate).isBetween(periodStart, periodEnd, null, '[]'));
+      const suppliersSet = new Set(periodPOs.map(po => po.supplierId).filter(Boolean));
 
       data.push({
         month: key,
-        orderCount: monthPOs.length,
-        totalAmount: monthPOs.reduce((s, p) => s + (p.totalAmount || 0), 0),
-        itemCount: monthPOs.reduce((s, p) => s + p.items.length, 0),
+        orderCount: periodPOs.length,
+        totalAmount: periodPOs.reduce((s, po) => s + (po.totalAmount || 0), 0),
+        itemCount: periodPOs.reduce((s, po) => s + po.items.length, 0),
         supplierCount: suppliersSet.size,
-        receiptCount: monthReceipts.length,
-        receiptAmount: monthReceipts.reduce((s, r) => s + r.totalAmount, 0),
-        onTimeRate: monthReceipts.length > 0 ? Math.round(monthReceipts.filter(r => {
-          const po = purchaseOrders.find(p => p.id === r.purchaseOrderId);
+        receiptCount: periodReceipts.length,
+        receiptAmount: periodReceipts.reduce((s, r) => s + r.totalAmount, 0),
+        onTimeRate: periodReceipts.length > 0 ? Math.round(periodReceipts.filter(r => {
+          const po = purchaseOrders.find(po => po.id === r.purchaseOrderId);
           return po && dayjs(r.receivedDate).isBefore(dayjs(po.requiredDate).endOf('day'));
-        }).length / monthReceipts.length * 100) : 0,
+        }).length / periodReceipts.length * 100) : 0,
       });
     }
     return data;
-  }, [purchaseOrders, receipts]);
+  }, [purchaseOrders, receipts, purchaseReportPeriod, purchaseReportDate]);
 
-  // Stock turnover report
+  // Stock turnover report - supports category and warehouse filtering
   const turnoverData: StockTurnoverStat[] = useMemo(() => {
     const reportStart = reportMonth.clone().startOf('month');
     const reportEnd = reportMonth.clone().endOf('month');
-    const lastMonthStart = reportStart.clone().subtract(1, 'month');
 
-    return stockRecords.map(sr => {
+    const filteredStockRecords = stockRecords.filter(sr => {
+      if (turnoverCategoryFilter && sr.category !== turnoverCategoryFilter) return false;
+      if (turnoverWarehouseFilter && sr.warehouse !== turnoverWarehouseFilter) return false;
+      return true;
+    });
+
+    return filteredStockRecords.map(sr => {
       const inMoves = stockMovements.filter(m =>
         m.productId === sr.productId && m.type === 'in'
         && dayjs(m.date).isBetween(reportStart, reportEnd, null, '[]')
+        && (!turnoverWarehouseFilter || m.warehouse === turnoverWarehouseFilter)
       );
       const outMoves = stockMovements.filter(m =>
         m.productId === sr.productId && m.type === 'out'
         && dayjs(m.date).isBetween(reportStart, reportEnd, null, '[]')
+        && (!turnoverWarehouseFilter || m.warehouse === turnoverWarehouseFilter)
       );
 
       const inQty = inMoves.reduce((s, m) => s + m.quantity, 0);
@@ -146,11 +184,11 @@ export default function ReconciliationWindow() {
       const inAmount = inMoves.reduce((s, m) => s + m.quantity * m.unitPrice, 0);
       const outAmount = outMoves.reduce((s, m) => s + m.quantity * m.unitPrice, 0);
 
-      // Approximate beginning stock
       const monthChanges = stockMovements.filter(m =>
         m.productId === sr.productId
         && (m.type === 'in' || m.type === 'out')
         && dayjs(m.date).isBetween(reportStart, reportEnd, null, '[]')
+        && (!turnoverWarehouseFilter || m.warehouse === turnoverWarehouseFilter)
       );
       const netChange = monthChanges.reduce((s, m) =>
         s + (m.type === 'in' ? m.quantity : -m.quantity), 0);
@@ -177,7 +215,7 @@ export default function ReconciliationWindow() {
         outAmount,
       };
     }).sort((a, b) => b.turnoverRate - a.turnoverRate);
-  }, [stockRecords, stockMovements, reportMonth]);
+  }, [stockRecords, stockMovements, reportMonth, turnoverCategoryFilter, turnoverWarehouseFilter]);
 
   const handlePayment = async () => {
     if (!paymentModal) return;
@@ -428,10 +466,45 @@ export default function ReconciliationWindow() {
                   <div className="page-header" style={{ marginTop: -16 }}>
                     <div>
                       <div className="page-title">月度采购分析报表</div>
-                      <div className="page-subtitle">展示近6个月采购订单、入库金额、准时交付率等核心指标</div>
+                      <div className="page-subtitle">展示采购订单、入库金额、准时交付率等核心指标</div>
                     </div>
                     <Space>
-                      <Button icon={<FileExcelOutlined />} onClick={() => message.success('报表已导出（模拟）')}>
+                      <Radio.Group value={purchaseReportPeriod} onChange={(e) => setPurchaseReportPeriod(e.target.value)}>
+                        <Radio.Button value="month">按月度</Radio.Button>
+                        <Radio.Button value="quarter">按季度</Radio.Button>
+                      </Radio.Group>
+                      {purchaseReportPeriod === 'month' ? (
+                        <DatePicker
+                          picker="month"
+                          value={purchaseReportDate}
+                          onChange={(v) => v && setPurchaseReportDate(v)}
+                          format="YYYY年MM月"
+                        />
+                      ) : (
+                        <DatePicker
+                          picker="quarter"
+                          value={purchaseReportDate}
+                          onChange={(v) => v && setPurchaseReportDate(v)}
+                          format="YYYY年Q季度"
+                        />
+                      )}
+                      <Button icon={<FileExcelOutlined />} onClick={() => {
+                        const csvContent = [
+                          ['周期', '采购单数量', '采购总金额', '物料条目数', '供应商数', '入库单数', '入库金额', '准时交付率(%)'],
+                          ...monthlyPurchaseData.map(d => [
+                            d.month, d.orderCount, d.totalAmount, d.itemCount, d.supplierCount,
+                            d.receiptCount, d.receiptAmount, d.onTimeRate
+                          ])
+                        ].map(row => row.join(',')).join('\n');
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `采购报表_${dayjs().format('YYYYMMDD')}.csv`;
+                        link.click();
+                        URL.revokeObjectURL(url);
+                        message.success('报表已导出');
+                      }}>
                         导出Excel
                       </Button>
                     </Space>
@@ -529,17 +602,29 @@ export default function ReconciliationWindow() {
                       </Card>
                     </Col>
                     <Col span={10}>
-                      <Card title="🏢 供应商采购占比（当月）">
+                      <Card title={`🏢 供应商采购占比（${purchaseReportPeriod === 'month' ? '当月' : '当季'}）`}>
                         {(() => {
-                          const currentMonth = dayjs().format('YYYY-MM');
-                          const currentPOs = purchaseOrders.filter(p => p.createTime.startsWith(currentMonth) && p.supplierId);
+                          let periodStart, periodEnd;
+                          if (purchaseReportPeriod === 'month') {
+                            periodStart = purchaseReportDate.clone().startOf('month');
+                            periodEnd = purchaseReportDate.clone().endOf('month');
+                          } else {
+                            const quarter = Math.floor(purchaseReportDate.month() / 3);
+                            const year = purchaseReportDate.year();
+                            periodStart = dayjs(`${year}-${quarter * 3 + 1}-01`).startOf('month');
+                            periodEnd = dayjs(`${year}-${quarter * 3 + 3}-01`).endOf('month');
+                          }
+
+                          const currentPOs = purchaseOrders.filter(p =>
+                            dayjs(p.createTime).isBetween(periodStart, periodEnd, null, '[]') && p.supplierId
+                          );
                           const supplierPOAmounts: Record<string, number> = {};
                           currentPOs.forEach(p => {
                             const key = p.supplierName || '未知';
                             supplierPOAmounts[key] = (supplierPOAmounts[key] || 0) + (p.totalAmount || 0);
                           });
                           const pieData = Object.entries(supplierPOAmounts).map(([name, value]) => ({ name, value }));
-                          if (pieData.length === 0) return <Empty description="本月暂无数据" />;
+                          if (pieData.length === 0) return <Empty description="本期暂无数据" />;
                           return (
                             <ResponsiveContainer width="100%" height={280}>
                               <PieChart>
@@ -617,7 +702,49 @@ export default function ReconciliationWindow() {
                         onChange={(v) => v && setReportMonth(v)}
                         style={{ width: 180 }}
                       />
-                      <Button icon={<FileExcelOutlined />} onClick={() => message.success('报表已导出（模拟）')}>
+                      <Select
+                        placeholder="选择分类"
+                        allowClear
+                        style={{ width: 150 }}
+                        value={turnoverCategoryFilter}
+                        onChange={setTurnoverCategoryFilter}
+                        options={categories.map(c => ({ value: c, label: c }))}
+                      />
+                      <Select
+                        placeholder="选择仓库"
+                        allowClear
+                        style={{ width: 150 }}
+                        value={turnoverWarehouseFilter}
+                        onChange={setTurnoverWarehouseFilter}
+                        options={warehouses.map(w => ({ value: w, label: w }))}
+                      />
+                      <Button
+                        ghost
+                        onClick={() => {
+                          setTurnoverCategoryFilter(undefined);
+                          setTurnoverWarehouseFilter(undefined);
+                        }}
+                      >
+                        重置筛选
+                      </Button>
+                      <Button icon={<FileExcelOutlined />} onClick={() => {
+                        const csvContent = [
+                          ['物料名称', 'SKU', '分类', '期初库存', '期末库存', '平均库存',
+                           '入库数量', '出库数量', '周转率(次/月)', '周转天数(天)', '入库金额', '出库金额'],
+                          ...turnoverData.map(d => [
+                            d.productName, d.sku, d.category, d.beginningStock, d.endingStock, d.avgStock,
+                            d.inQty, d.outQty, d.turnoverRate, d.turnoverDays, d.inAmount, d.outAmount
+                          ])
+                        ].map(row => row.join(',')).join('\n');
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `库存周转报表_${dayjs().format('YYYYMMDD')}.csv`;
+                        link.click();
+                        URL.revokeObjectURL(url);
+                        message.success('报表已导出');
+                      }}>
                         导出Excel
                       </Button>
                     </Space>
