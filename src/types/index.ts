@@ -195,6 +195,18 @@ export interface LogisticsNode {
   operator?: string;
 }
 
+export interface ShipmentExceptionInfo {
+  reason: string;
+  result: string;
+  handleTime: string;
+  handler: string;
+  returnItems?: {
+    productId: string;
+    productName: string;
+    quantity: number;
+  }[];
+}
+
 export interface Shipment {
   id: string;
   shipmentNo: string;
@@ -202,6 +214,7 @@ export interface Shipment {
   salesOrderNo: string;
   items: ShipmentItem[];
   totalAmount: number;
+  costAmount?: number;
   customerName: string;
   shippingAddress: string;
   receiverContact: string;
@@ -219,6 +232,7 @@ export interface Shipment {
   signoffTime?: string;
   signoffPerson?: string;
   signoffRemark?: string;
+  exceptionInfo?: ShipmentExceptionInfo;
   remark?: string;
 }
 
@@ -271,6 +285,40 @@ export interface StockRisk {
   last30DaysConsumption: number;
   estimatedDaysLeft: number;
   affectedOrders: string[];
+}
+
+export interface Receivable {
+  id: string;
+  billNo: string;
+  salesOrderId: string;
+  salesOrderNo: string;
+  shipmentId: string;
+  shipmentNo: string;
+  customerName: string;
+  billDate: string;
+  dueDate: string;
+  totalAmount: number;
+  receivedAmount: number;
+  unreceivedAmount: number;
+  status: PaymentStatus;
+  items: {
+    productId: string;
+    productName: string;
+    sku: string;
+    quantity: number;
+    unitPrice: number;
+    costPrice: number;
+    subtotal: number;
+    costSubtotal: number;
+  }[];
+  receipts: {
+    date: string;
+    amount: number;
+    method: string;
+    reference?: string;
+    remark?: string;
+  }[];
+  remark?: string;
 }
 
 export interface MonthlyPurchaseStat {

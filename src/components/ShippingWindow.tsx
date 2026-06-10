@@ -8,11 +8,12 @@ import {
   PlusOutlined, SearchOutlined, EyeOutlined, EditOutlined,
   TruckOutlined, RocketOutlined, CheckCircleOutlined,
   InfoCircleOutlined, InboxOutlined, UserOutlined,
+  ExclamationCircleOutlined, MinusCircleOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useAppStore } from '../store/appStore';
-import { Shipment, ShippingStatus, LogisticsNode, SalesOrder } from '../types';
+import { Shipment, ShippingStatus, LogisticsNode, SalesOrder, ShipmentExceptionInfo } from '../types';
 
 const statusConfig: Record<ShippingStatus, { color: string; text: string; step: number }> = {
   created: { color: 'default', text: '已创建', step: 0 },
@@ -28,12 +29,15 @@ const statusConfig: Record<ShippingStatus, { color: string; text: string; step: 
 const carriers = ['顺丰速运', '德邦物流', '圆通速递', '中通快递', '京东物流', '跨越速运'];
 
 export default function ShippingWindow() {
-  const { shipments, salesOrders, stockRecords, createShipment, updateShipmentStatus, updateShipmentSignoff } = useAppStore();
+  const { shipments, salesOrders, stockRecords, createShipment, updateShipmentStatus, updateShipmentSignoff, handleShipmentException } = useAppStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [detailModal, setDetailModal] = useState<Shipment | null>(null);
+  const [detailShipmentId, setDetailShipmentId] = useState<string | null>(null);
+  const detailModal = useMemo(() => detailShipmentId ? shipments.find(s => s.id === detailShipmentId) || null : null, [detailShipmentId, shipments]);
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<ShippingStatus | undefined>();
   const [signoffModalOpen, setSignoffModalOpen] = useState(false);
+  const [exceptionModalOpen, setExceptionModalOpen] = useState(false);
+  const [exceptionForm] = Form.useForm();
   const [form] = Form.useForm();
   const [signoffForm] = Form.useForm();
 
@@ -88,11 +92,11 @@ export default function ShippingWindow() {
       dataIndex: 'customerName',
       width: 200,
       ellipsis: { showTitle: false },
-      render: (v) => (
+      render: (v, r) => (
         <Tooltip title={v}>
           <div>
             <div>{v}</div>
-            <div style={{ fontSize: 12, color: '#8c8c8c' }}>{detailModal?.receiverPhone || '联系客户'}</div>
+            <div style={{ fontSize: 12, color: '#8c8c8c' }}>{r.receiverPhone || '联系客户'}</div>
           </div>
         </Tooltip>
       ),
@@ -152,7 +156,7 @@ export default function ShippingWindow() {
       fixed: 'right',
       render: (_, record) => (
         <div className="table-action-col">
-          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setDetailModal(record)}>
+          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setDetailShipmentId(record.id)}>
             详情
           </Button>
           {['created', 'picking', 'packed'].includes(record.status) && (
@@ -190,6 +194,21 @@ export default function ShippingWindow() {
               })}
             >
               确认签收
+            </Button>
+          )}
+          {record.status !== 'created' && (
+            <Button
+              type="link"
+              size="small"
+              danger
+              icon={<ExclamationCircleOutlined />}
+              onClick={() => {
+                exceptionForm.resetFields();
+                setDetailShipmentId(record.id);
+                setExceptionModalOpen(true);
+              }}
+            >
+              异常处理
             </Button>
           )}
         </div>
@@ -287,6 +306,39 @@ export default function ShippingWindow() {
       signoffRemark: detailModal.signoffRemark || '',
     });
     setSignoffModalOpen(true);
+  };
+
+  const handleExceptionSubmit = async () => {
+    try {
+      const values = await exceptionForm.validateFields();
+      if (!detailModal) return;
+
+      const returnItems = (values.returnItems || [])
+        .filter((ri: any) => ri && ri.quantity && ri.quantity > 0)
+        .map((ri: any) => {
+          const item = detailModal.items.find(i => i.productId === ri.productId);
+          return {
+            productId: ri.productId,
+            productName: item?.productName || '',
+            quantity: ri.quantity,
+          };
+        });
+
+      const exceptionInfo: ShipmentExceptionInfo = {
+        reason: values.reason,
+        result: values.result,
+        handler: values.handler,
+        handleTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+        returnItems: returnItems.length > 0 ? returnItems : undefined,
+      };
+
+      handleShipmentException(detailModal.id, exceptionInfo);
+      message.success('异常处理已完成');
+      setExceptionModalOpen(false);
+      exceptionForm.resetFields();
+    } catch (e) {
+      //
+    }
   };
 
   const shipColumns: ColumnsType<any> = [
@@ -509,7 +561,7 @@ export default function ShippingWindow() {
           </div>
         }
         open={!!detailModal}
-        onCancel={() => setDetailModal(null)}
+        onCancel={() => setDetailShipmentId(null)}
         width={900}
         footer={[
           detailModal && detailModal.status === 'delivered' && (
@@ -522,7 +574,7 @@ export default function ShippingWindow() {
               {detailModal.signoffPerson ? '修改签收信息' : '补录签收信息'}
             </Button>
           ),
-          <Button key="close" onClick={() => setDetailModal(null)}>关闭</Button>,
+          <Button key="close" onClick={() => setDetailShipmentId(null)}>关闭</Button>,
         ]}
       >
         {detailModal && (
@@ -556,6 +608,31 @@ export default function ShippingWindow() {
                     </>
                   )}
                   {detailModal.remark && <p><strong>备注：</strong>{detailModal.remark}</p>}
+                  {detailModal.exceptionInfo && (
+                    <>
+                      <Divider style={{ margin: '8px 0' }} />
+                      <div style={{ background: '#fff1f0', padding: 8, borderRadius: 4, border: '1px solid #ffa39e' }}>
+                        <p style={{ color: '#cf1322', fontWeight: 600, marginBottom: 4 }}>
+                          <ExclamationCircleOutlined style={{ marginRight: 4 }} />异常处理记录
+                        </p>
+                        <p><strong>异常原因：</strong>{detailModal.exceptionInfo.reason}</p>
+                        <p><strong>处理结果：</strong>{detailModal.exceptionInfo.result}</p>
+                        <p><strong>处理人：</strong>{detailModal.exceptionInfo.handler}</p>
+                        <p><strong>处理时间：</strong>{detailModal.exceptionInfo.handleTime}</p>
+                        {detailModal.exceptionInfo.returnItems && detailModal.exceptionInfo.returnItems.length > 0 && (
+                          <>
+                            <Divider style={{ margin: '4px 0' }} />
+                            <p style={{ fontWeight: 600, marginBottom: 4 }}>退回入库明细：</p>
+                            {detailModal.exceptionInfo.returnItems.map(ri => (
+                              <p key={ri.productId} style={{ marginLeft: 12, marginBottom: 2 }}>
+                                {ri.productName}：退回 {ri.quantity} 件
+                              </p>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </Card>
               </Col>
             </Row>
@@ -665,6 +742,96 @@ export default function ShippingWindow() {
               showCount
             />
           </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={
+          <div>
+            <ExclamationCircleOutlined style={{ color: '#ff4d4f', marginRight: 6 }} />
+            异常/退货处理 - {detailModal?.shipmentNo}
+          </div>
+        }
+        open={exceptionModalOpen}
+        onOk={handleExceptionSubmit}
+        onCancel={() => { setExceptionModalOpen(false); exceptionForm.resetFields(); }}
+        width={650}
+        okText="提交处理"
+        cancelText="取消"
+      >
+        <Form form={exceptionForm} layout="vertical">
+          <Form.Item
+            name="reason"
+            label="异常原因"
+            rules={[{ required: true, message: '请填写异常原因' }]}
+          >
+            <Input.TextArea rows={3} placeholder="请描述异常原因" maxLength={500} showCount />
+          </Form.Item>
+          <Form.Item
+            name="result"
+            label="处理结果"
+            rules={[{ required: true, message: '请填写处理结果' }]}
+          >
+            <Input.TextArea rows={3} placeholder="请描述处理结果" maxLength={500} showCount />
+          </Form.Item>
+          <Form.Item
+            name="handler"
+            label="处理人"
+            rules={[{ required: true, message: '请填写处理人' }]}
+          >
+            <Input placeholder="请输入处理人姓名" prefix={<UserOutlined />} />
+          </Form.Item>
+          <Divider orientation="left" style={{ margin: '8px 0 16px' }}>退回物料（可选）</Divider>
+          <Form.List name="returnItems">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map(({ key, name, ...restField }) => (
+                  <Row key={key} gutter={8} align="middle" style={{ marginBottom: 8 }}>
+                    <Col span={12}>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'productId']}
+                        style={{ marginBottom: 0 }}
+                        rules={[{ required: true, message: '请选择物料' }]}
+                      >
+                        <Select
+                          placeholder="选择退回物料"
+                          options={detailModal?.items.map(item => ({
+                            value: item.productId,
+                            label: item.productName,
+                          })) || []}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col span={8}>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'quantity']}
+                        style={{ marginBottom: 0 }}
+                        rules={[{ required: true, message: '请填写数量' }]}
+                      >
+                        <InputNumber
+                          min={1}
+                          max={detailModal?.items.find(i => i.productId === exceptionForm.getFieldValue(['returnItems', name, 'productId']))?.quantity || 999}
+                          style={{ width: '100%' }}
+                          placeholder="退回数量"
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col span={4}>
+                      <MinusCircleOutlined
+                        style={{ color: '#ff4d4f', fontSize: 18, cursor: 'pointer' }}
+                        onClick={() => remove(name)}
+                      />
+                    </Col>
+                  </Row>
+                ))}
+                <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
+                  添加退回物料
+                </Button>
+              </>
+            )}
+          </Form.List>
         </Form>
       </Modal>
     </div>

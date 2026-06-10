@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   Product, Supplier, PurchaseOrder, SupplierQuote, WarehouseReceipt,
   StockRecord, StockMovement, SalesOrder, Shipment, Payable, StockRisk,
+  Receivable, ShipmentExceptionInfo,
   PurchaseItem, ReceiptItem, QCResult, ShippingStatus, LogisticsNode,
   SalesOrderItem, ShipmentItem, QuoteItem
 } from '../types';
@@ -22,6 +23,7 @@ interface PersistData {
   salesOrders: SalesOrder[];
   shipments: Shipment[];
   payables: Payable[];
+  receivables: Receivable[];
   stockRisks: StockRisk[];
   lastSaved: string;
   version: number;
@@ -38,6 +40,7 @@ interface AppState {
   salesOrders: SalesOrder[];
   shipments: Shipment[];
   payables: Payable[];
+  receivables: Receivable[];
   stockRisks: StockRisk[];
 
   addPurchaseOrder: (order: Omit<PurchaseOrder, 'id' | 'orderNo' | 'createTime' | 'status'>) => void;
@@ -62,8 +65,10 @@ interface AppState {
   }) => void;
   updateShipmentStatus: (shipmentId: string, status: ShippingStatus, node: LogisticsNode) => void;
   updateShipmentSignoff: (shipmentId: string, signoffInfo: { signoffTime: string; signoffPerson: string; signoffRemark?: string }) => void;
+  handleShipmentException: (shipmentId: string, exceptionInfo: ShipmentExceptionInfo) => void;
 
   addPayment: (payableId: string, payment: { amount: number; method: string; reference?: string; remark?: string }) => void;
+  addReceivablePayment: (receivableId: string, payment: { amount: number; method: string; reference?: string; remark?: string }) => void;
 
   recalculateStockRisks: () => void;
   resetToMockData: () => void;
@@ -111,6 +116,7 @@ const saveToStorage = (state: any) => {
       salesOrders: state.salesOrders,
       shipments: state.shipments,
       payables: state.payables,
+      receivables: state.receivables || [],
       stockRisks: state.stockRisks,
       lastSaved: new Date().toISOString(),
       version: 1,
@@ -136,6 +142,7 @@ const getInitialState = () => {
       salesOrders: persisted.salesOrders || mockSalesOrders,
       shipments: persisted.shipments || mockShipments,
       payables: persisted.payables || mockPayables,
+      receivables: persisted.receivables || [],
       stockRisks: persisted.stockRisks || mockStockRisks,
     };
   }
@@ -151,6 +158,7 @@ const getInitialState = () => {
     salesOrders: mockSalesOrders,
     shipments: mockShipments,
     payables: mockPayables,
+    receivables: [],
     stockRisks: mockStockRisks,
   };
 };
@@ -577,6 +585,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     const totalAmount = shipmentItems.reduce((s, i) => s + i.subtotal, 0);
+    const costAmount = shipmentData.items.reduce((s, si) => {
+      const stock = state.stockRecords.find(sr => sr.productId === si.productId);
+      return s + si.qty * (stock?.unitPrice || 0);
+    }, 0);
 
     const initialNode: LogisticsNode = {
       time: today(),
@@ -593,6 +605,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       salesOrderNo: so.orderNo,
       items: shipmentItems,
       totalAmount,
+      costAmount,
       customerName: so.customerName,
       shippingAddress: so.shippingAddress,
       receiverContact: so.customerContact,
@@ -648,7 +661,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       return {
         ...item,
-        allocatedQty: Math.max(0, (item.allocatedQty || 0) - si.qty),
         shippedQty: (item.shippedQty || 0) + si.qty,
       };
     });
@@ -674,6 +686,51 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
 
   updateShipmentStatus: (shipmentId, status, node) => set((state) => {
+    const shipment = state.shipments.find(sh => sh.id === shipmentId);
+
+    let newReceivable: Receivable | null = null;
+    if (status === 'delivered' && shipment) {
+      const existingReceivable = state.receivables.find(r => r.shipmentId === shipmentId);
+      if (!existingReceivable) {
+        const now = new Date();
+        const seqAR = state.receivables.filter(r => {
+          const d = new Date(r.billDate);
+          return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+        }).length + 1;
+
+        newReceivable = {
+          id: generateId('AR'),
+          billNo: generateOrderNo('AR', now, seqAR),
+          salesOrderId: shipment.salesOrderId,
+          salesOrderNo: shipment.salesOrderNo,
+          shipmentId: shipment.id,
+          shipmentNo: shipment.shipmentNo,
+          customerName: shipment.customerName,
+          billDate: today().split(' ')[0],
+          dueDate: new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
+          totalAmount: shipment.totalAmount,
+          receivedAmount: 0,
+          unreceivedAmount: shipment.totalAmount,
+          status: 'unpaid',
+          items: shipment.items.map(i => ({
+            productId: i.productId,
+            productName: i.productName,
+            sku: i.sku,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            costPrice: shipment.costAmount
+              ? +(shipment.costAmount / shipment.totalAmount * i.unitPrice).toFixed(2)
+              : i.unitPrice * 0.7,
+            subtotal: i.subtotal,
+            costSubtotal: shipment.costAmount
+              ? +(shipment.costAmount / shipment.totalAmount * i.subtotal).toFixed(2)
+              : i.subtotal * 0.7,
+          })),
+          receipts: [],
+        };
+      }
+    }
+
     const newState = {
       shipments: state.shipments.map(sh =>
         sh.id === shipmentId
@@ -686,7 +743,8 @@ export const useAppStore = create<AppState>((set, get) => ({
               actualArrival: status === 'delivered' ? today() : sh.actualArrival,
             }
           : sh
-      )
+      ),
+      receivables: newReceivable ? [newReceivable, ...state.receivables] : state.receivables,
     };
     saveToStorage({ ...state, ...newState });
     return newState;
@@ -732,6 +790,130 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
           : p
       )
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
+
+  addReceivablePayment: (receivableId, payment) => set((state) => {
+    const ar = state.receivables.find(r => r.id === receivableId);
+    if (!ar) return state;
+
+    const receivedAmount = ar.receivedAmount + payment.amount;
+    const unreceivedAmount = ar.totalAmount - receivedAmount;
+    let status: 'paid' | 'partial' | 'unpaid';
+    if (unreceivedAmount <= 0) status = 'paid';
+    else if (receivedAmount > 0) status = 'partial';
+    else status = 'unpaid';
+
+    const newState = {
+      receivables: state.receivables.map(r =>
+        r.id === receivableId
+          ? {
+              ...r,
+              receivedAmount,
+              unreceivedAmount,
+              status,
+              receipts: [...r.receipts, { ...payment, date: today().split(' ')[0] }],
+            }
+          : r
+      )
+    };
+    saveToStorage({ ...state, ...newState });
+    return newState;
+  }),
+
+  handleShipmentException: (shipmentId, exceptionInfo) => set((state) => {
+    const shipment = state.shipments.find(sh => sh.id === shipmentId);
+    if (!shipment) return state;
+
+    let updatedStocks = [...state.stockRecords];
+    const newMovements: StockMovement[] = [];
+
+    if (exceptionInfo.returnItems && exceptionInfo.returnItems.length > 0) {
+      exceptionInfo.returnItems.forEach(ri => {
+        const stockIdx = updatedStocks.findIndex(s => s.productId === ri.productId);
+        if (stockIdx >= 0) {
+          const stock = updatedStocks[stockIdx];
+          const beforeQty = stock.quantity;
+          const afterQty = beforeQty + ri.quantity;
+
+          updatedStocks[stockIdx] = {
+            ...stock,
+            quantity: afterQty,
+            totalValue: stock.unitPrice * afterQty,
+            lastUpdated: today().split(' ')[0],
+          };
+
+          newMovements.push({
+            id: generateId('M'),
+            date: today().split(' ')[0],
+            productId: ri.productId,
+            productName: ri.productName,
+            sku: stock.sku,
+            type: 'in',
+            quantity: ri.quantity,
+            beforeQty,
+            afterQty,
+            unitPrice: stock.unitPrice,
+            referenceType: '退货入库',
+            referenceNo: shipment.shipmentNo,
+            warehouse: stock.warehouse,
+            operator: exceptionInfo.handler,
+            remark: `异常退货：${exceptionInfo.reason}`,
+          });
+        }
+      });
+    }
+
+    const so = state.salesOrders.find(s => s.id === shipment.salesOrderId);
+    let updatedSOs = state.salesOrders;
+    if (so && exceptionInfo.returnItems) {
+      const updatedItems = so.items.map(item => {
+        const returnItem = exceptionInfo.returnItems!.find(ri => ri.productId === item.productId);
+        if (returnItem) {
+          return {
+            ...item,
+            shippedQty: Math.max(0, (item.shippedQty || 0) - returnItem.quantity),
+          };
+        }
+        return item;
+      });
+
+      const allShipped = updatedItems.every(i => (i.shippedQty || 0) >= i.quantity);
+      const partialShipped = updatedItems.some(i => (i.shippedQty || 0) > 0);
+      let soStatus: typeof so.status = so.status;
+      if (allShipped) soStatus = 'shipped';
+      else if (partialShipped) soStatus = 'partial_shipped';
+      else if (updatedItems.every(i => (i.allocatedQty || 0) >= i.quantity)) soStatus = 'allocated';
+      else if (updatedItems.some(i => (i.allocatedQty || 0) > 0)) soStatus = 'partially_allocated';
+      else soStatus = 'pending_allocation';
+
+      updatedSOs = state.salesOrders.map(s =>
+        s.id === so.id ? { ...s, items: updatedItems, status: soStatus } : s
+      );
+    }
+
+    const newState = {
+      shipments: state.shipments.map(sh =>
+        sh.id === shipmentId
+          ? {
+              ...sh,
+              status: 'exception' as const,
+              exceptionInfo,
+              logistics: [...sh.logistics, {
+                time: today(),
+                status: '异常处理',
+                location: sh.warehouse,
+                description: `${exceptionInfo.reason} → ${exceptionInfo.result}`,
+                operator: exceptionInfo.handler,
+              }],
+            }
+          : sh
+      ),
+      stockRecords: updatedStocks,
+      stockMovements: [...newMovements, ...state.stockMovements],
+      salesOrders: updatedSOs,
     };
     saveToStorage({ ...state, ...newState });
     return newState;
@@ -803,6 +985,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       salesOrders: mockSalesOrders,
       shipments: mockShipments,
       payables: mockPayables,
+      receivables: [],
       stockRisks: mockStockRisks,
     });
   },

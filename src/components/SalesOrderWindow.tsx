@@ -27,7 +27,7 @@ const statusMap: Record<SalesOrderStatus, { color: string; text: string; icon: a
 
 export default function SalesOrderWindow() {
   const {
-    salesOrders, products, shipments,
+    salesOrders, products, shipments, receivables,
     addSalesOrder, updateSalesOrder, deleteSalesOrder,
   } = useAppStore();
 
@@ -168,10 +168,62 @@ export default function SalesOrderWindow() {
     message.success('销售订单已删除');
   };
 
+  const [planDetailOrder, setPlanDetailOrder] = useState<SalesOrder | null>(null);
+
   const orderShipments = useMemo(() => {
     if (!viewOrder) return [];
     return shipments.filter(s => s.salesOrderId === viewOrder.id);
   }, [viewOrder, shipments]);
+
+  const shippingPlanData = useMemo(() => {
+    return salesOrders.filter(o => o.status !== 'cancelled').map(order => {
+      const relatedShipments = shipments.filter(s => s.salesOrderId === order.id);
+      let pendingAllocateQty = 0;
+      let pendingShipQty = 0;
+      let inTransitQty = 0;
+      let deliveredQty = 0;
+      let pendingAllocateAmt = 0;
+      let pendingShipAmt = 0;
+      let inTransitAmt = 0;
+      let deliveredAmt = 0;
+
+      order.items.forEach(item => {
+        const allocated = item.allocatedQty || 0;
+        const shipped = item.shippedQty || 0;
+        const toAllocate = item.quantity - allocated;
+        const toShip = allocated - shipped;
+        pendingAllocateQty += toAllocate;
+        pendingShipQty += toShip;
+        pendingAllocateAmt += toAllocate * item.unitPrice;
+        pendingShipAmt += toShip * item.unitPrice;
+
+        relatedShipments.forEach(sh => {
+          const matchItem = sh.items.find(si => si.productId === item.productId);
+          if (!matchItem) return;
+          if (['shipped', 'in_transit', 'out_for_delivery'].includes(sh.status)) {
+            inTransitQty += matchItem.quantity;
+            inTransitAmt += matchItem.quantity * item.unitPrice;
+          }
+          if (sh.status === 'delivered') {
+            deliveredQty += matchItem.quantity;
+            deliveredAmt += matchItem.quantity * item.unitPrice;
+          }
+        });
+      });
+
+      return {
+        ...order,
+        pendingAllocateQty,
+        pendingShipQty,
+        inTransitQty,
+        deliveredQty,
+        pendingAllocateAmt,
+        pendingShipAmt,
+        inTransitAmt,
+        deliveredAmt,
+      };
+    });
+  }, [salesOrders, shipments]);
 
   const columns: ColumnsType<SalesOrder> = [
     { title: '订单号', dataIndex: 'orderNo', width: 160, fixed: 'left' },
@@ -254,6 +306,80 @@ export default function SalesOrderWindow() {
     },
   ];
 
+  const shipmentStatusConfig: Record<string, { color: string; text: string }> = {
+    created: { color: 'default', text: '已创建' },
+    picking: { color: 'processing', text: '拣货中' },
+    packed: { color: 'purple', text: '已打包' },
+    shipped: { color: 'blue', text: '已发货' },
+    in_transit: { color: 'cyan', text: '运输中' },
+    out_for_delivery: { color: 'geekblue', text: '派送中' },
+    delivered: { color: 'green', text: '已签收' },
+    exception: { color: 'red', text: '异常' },
+  };
+
+  const planDetailShipments = useMemo(() => {
+    if (!planDetailOrder) return [];
+    return shipments.filter(s => s.salesOrderId === planDetailOrder.id);
+  }, [planDetailOrder, shipments]);
+
+  const planDetailReceivables = useMemo(() => {
+    if (!planDetailOrder) return [];
+    return receivables.filter(r => r.salesOrderId === planDetailOrder.id);
+  }, [planDetailOrder, receivables]);
+
+  const shippingPlanColumns: ColumnsType<any> = [
+    { title: '订单号', dataIndex: 'orderNo', width: 140, fixed: 'left' },
+    { title: '客户名称', dataIndex: 'customerName', width: 160 },
+    {
+      title: '订单总额', dataIndex: 'totalAmount', width: 120, align: 'right',
+      render: (v) => <span style={{ fontWeight: 600, color: '#cf1322' }}>¥{v.toLocaleString()}</span>,
+    },
+    {
+      title: '待分配', width: 160, align: 'right',
+      render: (_, r) => (
+        <div>
+          <div>{r.pendingAllocateQty} 件</div>
+          <div style={{ fontSize: 12, color: '#8c8c8c' }}>¥{r.pendingAllocateAmt.toLocaleString()}</div>
+        </div>
+      ),
+    },
+    {
+      title: '待发货', width: 160, align: 'right',
+      render: (_, r) => (
+        <div>
+          <div>{r.pendingShipQty} 件</div>
+          <div style={{ fontSize: 12, color: '#8c8c8c' }}>¥{r.pendingShipAmt.toLocaleString()}</div>
+        </div>
+      ),
+    },
+    {
+      title: '在途', width: 160, align: 'right',
+      render: (_, r) => (
+        <div>
+          <div style={{ color: '#1677ff' }}>{r.inTransitQty} 件</div>
+          <div style={{ fontSize: 12, color: '#8c8c8c' }}>¥{r.inTransitAmt.toLocaleString()}</div>
+        </div>
+      ),
+    },
+    {
+      title: '已签收', width: 160, align: 'right',
+      render: (_, r) => (
+        <div>
+          <div style={{ color: '#52c41a' }}>{r.deliveredQty} 件</div>
+          <div style={{ fontSize: 12, color: '#8c8c8c' }}>¥{r.deliveredAmt.toLocaleString()}</div>
+        </div>
+      ),
+    },
+    {
+      title: '操作', width: 100, fixed: 'right',
+      render: (_, r) => (
+        <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setPlanDetailOrder(r)}>
+          查看详情
+        </Button>
+      ),
+    },
+  ];
+
   return (
     <div>
       <div className="stat-cards">
@@ -290,40 +416,63 @@ export default function SalesOrderWindow() {
           </Button>
         </div>
 
-        <div className="filter-bar">
-          <Input
-            placeholder="搜索订单号/客户名称/联系人/电话"
-            prefix={<SearchOutlined />}
-            value={keyword}
-            onChange={e => setKeyword(e.target.value)}
-            style={{ width: 320 }}
-            allowClear
-          />
-          <Select
-            placeholder="订单状态"
-            allowClear
-            style={{ width: 150 }}
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={Object.entries(statusMap).map(([k, v]) => ({ value: k, label: v.text }))}
-          />
-          <RangePicker
-            value={dateRange}
-            onChange={setDateRange as any}
-            placeholder={['开始日期', '结束日期']}
-          />
-          <Button type="primary" ghost onClick={() => { setKeyword(''); setStatusFilter(undefined); setDateRange(null); }}>
-            重置
-          </Button>
-        </div>
+        <Tabs defaultActiveKey="orders" items={[
+          {
+            key: 'orders',
+            label: '订单列表',
+            children: (
+              <>
+                <div className="filter-bar">
+                  <Input
+                    placeholder="搜索订单号/客户名称/联系人/电话"
+                    prefix={<SearchOutlined />}
+                    value={keyword}
+                    onChange={e => setKeyword(e.target.value)}
+                    style={{ width: 320 }}
+                    allowClear
+                  />
+                  <Select
+                    placeholder="订单状态"
+                    allowClear
+                    style={{ width: 150 }}
+                    value={statusFilter}
+                    onChange={setStatusFilter}
+                    options={Object.entries(statusMap).map(([k, v]) => ({ value: k, label: v.text }))}
+                  />
+                  <RangePicker
+                    value={dateRange}
+                    onChange={setDateRange as any}
+                    placeholder={['开始日期', '结束日期']}
+                  />
+                  <Button type="primary" ghost onClick={() => { setKeyword(''); setStatusFilter(undefined); setDateRange(null); }}>
+                    重置
+                  </Button>
+                </div>
 
-        <Table
-          columns={columns}
-          dataSource={filteredData}
-          rowKey="id"
-          scroll={{ x: 1500 }}
-          pagination={{ pageSize: 10, showTotal: t => `共 ${t} 条订单` }}
-        />
+                <Table
+                  columns={columns}
+                  dataSource={filteredData}
+                  rowKey="id"
+                  scroll={{ x: 1500 }}
+                  pagination={{ pageSize: 10, showTotal: t => `共 ${t} 条订单` }}
+                />
+              </>
+            ),
+          },
+          {
+            key: 'shippingPlan',
+            label: '发货计划',
+            children: (
+              <Table
+                columns={shippingPlanColumns}
+                dataSource={shippingPlanData}
+                rowKey="id"
+                scroll={{ x: 1160 }}
+                pagination={{ pageSize: 10, showTotal: t => `共 ${t} 条订单` }}
+              />
+            ),
+          },
+        ]} />
       </div>
 
       <Modal
@@ -577,18 +726,141 @@ export default function SalesOrderWindow() {
                       title: '状态',
                       width: 100,
                       render: (_, r) => {
-                        const statusConfig: Record<string, { color: string; text: string }> = {
-                          created: { color: 'default', text: '已创建' },
-                          picking: { color: 'processing', text: '拣货中' },
-                          packed: { color: 'purple', text: '已打包' },
-                          shipped: { color: 'blue', text: '已发货' },
-                          in_transit: { color: 'cyan', text: '运输中' },
-                          out_for_delivery: { color: 'geekblue', text: '派送中' },
-                          delivered: { color: 'green', text: '已签收' },
-                          exception: { color: 'red', text: '异常' },
-                        };
-                        const cfg = statusConfig[r.status] || { color: 'default', text: r.status };
+                        const cfg = shipmentStatusConfig[r.status] || { color: 'default', text: r.status };
                         return <Tag color={cfg.color}>{cfg.text}</Tag>;
+                      },
+                    },
+                  ]}
+                />
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        title={`发货计划详情 - ${planDetailOrder?.orderNo}`}
+        open={!!planDetailOrder}
+        onCancel={() => setPlanDetailOrder(null)}
+        footer={[<Button key="close" onClick={() => setPlanDetailOrder(null)}>关闭</Button>]}
+        width={960}
+      >
+        {planDetailOrder && (
+          <div>
+            <Row gutter={24}>
+              <Col span={14}>
+                <Card title="订单基本信息" size="small">
+                  <p><strong>订单号：</strong>{planDetailOrder.orderNo}</p>
+                  <p><strong>客户：</strong>{planDetailOrder.customerName}</p>
+                  <p><strong>联系人：</strong>{planDetailOrder.customerContact} / {planDetailOrder.customerPhone}</p>
+                  <p><strong>收货地址：</strong>{planDetailOrder.shippingAddress}</p>
+                  <p><strong>要求发货：</strong>{planDetailOrder.requiredDate}</p>
+                  <p>
+                    <strong>状态：</strong>
+                    <Tag color={statusMap[planDetailOrder.status].color}>{statusMap[planDetailOrder.status].text}</Tag>
+                  </p>
+                </Card>
+              </Col>
+              <Col span={10}>
+                <Card title="金额汇总" size="small">
+                  <Statistic title="订单总金额" value={planDetailOrder.totalAmount} prefix="¥" />
+                </Card>
+              </Col>
+            </Row>
+
+            <Divider />
+            <div className="modal-section-title">库存分配状态</div>
+            <Table
+              size="small"
+              pagination={false}
+              dataSource={planDetailOrder.items}
+              rowKey="productId"
+              columns={[
+                { title: '物料名称', dataIndex: 'productName', width: 160 },
+                { title: 'SKU', dataIndex: 'sku', width: 120 },
+                { title: '需求', dataIndex: 'quantity', width: 80, align: 'right' },
+                { title: '已分配', dataIndex: 'allocatedQty', width: 80, align: 'right', render: v => v || 0 },
+                {
+                  title: '待分配', width: 80, align: 'right',
+                  render: (_, r) => r.quantity - (r.allocatedQty || 0),
+                },
+                { title: '单价', width: 100, align: 'right', render: (_, r) => `¥${r.unitPrice}` },
+                { title: '小计', width: 120, align: 'right', render: (_, r) => `¥${r.subtotal.toLocaleString()}` },
+              ]}
+            />
+
+            {planDetailShipments.length > 0 && (
+              <>
+                <Divider />
+                <div className="modal-section-title">关联发货单</div>
+                <Table
+                  size="small"
+                  pagination={false}
+                  dataSource={planDetailShipments}
+                  rowKey="id"
+                  columns={[
+                    { title: '发货单号', dataIndex: 'shipmentNo', width: 140 },
+                    {
+                      title: '状态', width: 100,
+                      render: (_, r) => {
+                        const cfg = shipmentStatusConfig[r.status] || { color: 'default', text: r.status };
+                        return <Tag color={cfg.color}>{cfg.text}</Tag>;
+                      },
+                    },
+                    {
+                      title: '发货数量', width: 100, align: 'right',
+                      render: (_, r) => r.items.reduce((s, i) => s + i.quantity, 0),
+                    },
+                    { title: '承运商', dataIndex: 'carrier', width: 100 },
+                    { title: '运单号', dataIndex: 'trackingNo', width: 140 },
+                    { title: '发货时间', dataIndex: 'shipTime', width: 140 },
+                    {
+                      title: '签收信息', width: 180,
+                      render: (_, r) => r.signoffTime
+                        ? <span>{r.signoffPerson} / {r.signoffTime}</span>
+                        : <span style={{ color: '#8c8c8c' }}>未签收</span>,
+                    },
+                  ]}
+                />
+              </>
+            )}
+
+            {planDetailReceivables.length > 0 && (
+              <>
+                <Divider />
+                <div className="modal-section-title">应收情况</div>
+                <Table
+                  size="small"
+                  pagination={false}
+                  dataSource={planDetailReceivables}
+                  rowKey="id"
+                  columns={[
+                    { title: '账单号', dataIndex: 'billNo', width: 140 },
+                    { title: '关联发货单', dataIndex: 'shipmentNo', width: 140 },
+                    { title: '账单日期', dataIndex: 'billDate', width: 120 },
+                    { title: '到期日期', dataIndex: 'dueDate', width: 120 },
+                    {
+                      title: '应收金额', dataIndex: 'totalAmount', width: 120, align: 'right',
+                      render: (v) => <span style={{ fontWeight: 600, color: '#cf1322' }}>¥{v.toLocaleString()}</span>,
+                    },
+                    {
+                      title: '已收金额', dataIndex: 'receivedAmount', width: 120, align: 'right',
+                      render: (v) => <span style={{ color: '#52c41a' }}>¥{v.toLocaleString()}</span>,
+                    },
+                    {
+                      title: '未收金额', dataIndex: 'unreceivedAmount', width: 120, align: 'right',
+                      render: (v) => <span style={{ color: '#faad14' }}>¥{v.toLocaleString()}</span>,
+                    },
+                    {
+                      title: '状态', dataIndex: 'status', width: 100,
+                      render: (v) => {
+                        const cfg: Record<string, { color: string; text: string }> = {
+                          unpaid: { color: 'red', text: '未收款' },
+                          partial: { color: 'orange', text: '部分收款' },
+                          paid: { color: 'green', text: '已收款' },
+                        };
+                        const c = cfg[v] || { color: 'default', text: v };
+                        return <Tag color={c.color}>{c.text}</Tag>;
                       },
                     },
                   ]}

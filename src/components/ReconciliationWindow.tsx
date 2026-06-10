@@ -8,7 +8,7 @@ import {
   SearchOutlined, PlusOutlined, EyeOutlined,
   FileExcelOutlined, CalendarOutlined, PayCircleOutlined,
   WarningOutlined, CheckCircleOutlined, BarChartOutlined,
-  FileDoneOutlined,
+  FileDoneOutlined, DollarOutlined, FundOutlined,
 } from '@ant-design/icons';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
@@ -20,7 +20,7 @@ import dayjs from 'dayjs';
 import isBetween from 'dayjs/plugin/isBetween';
 dayjs.extend(isBetween);
 import { useAppStore } from '../store/appStore';
-import { Payable, PaymentStatus, MonthlyPurchaseStat, StockTurnoverStat } from '../types';
+import { Payable, PaymentStatus, MonthlyPurchaseStat, StockTurnoverStat, Receivable } from '../types';
 
 const { RangePicker } = DatePicker;
 
@@ -33,7 +33,7 @@ const paymentStatusMap: Record<PaymentStatus, { color: string; text: string }> =
 const COLORS = ['#1677ff', '#52c41a', '#faad14', '#722ed1', '#eb2f96', '#13c2c2', '#fa8c16'];
 
 export default function ReconciliationWindow() {
-  const { payables, suppliers, addPayment, receipts, stockRecords, stockMovements, purchaseOrders, products } = useAppStore();
+  const { payables, suppliers, addPayment, receipts, stockRecords, stockMovements, purchaseOrders, products, receivables, addReceivablePayment, salesOrders, shipments } = useAppStore();
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<PaymentStatus | undefined>();
   const [supplierFilter, setSupplierFilter] = useState<string | undefined>();
@@ -45,6 +45,18 @@ export default function ReconciliationWindow() {
   const [turnoverCategoryFilter, setTurnoverCategoryFilter] = useState<string | undefined>();
   const [turnoverWarehouseFilter, setTurnoverWarehouseFilter] = useState<string | undefined>();
   const [form] = Form.useForm();
+
+  const [arKeyword, setArKeyword] = useState('');
+  const [arStatusFilter, setArStatusFilter] = useState<PaymentStatus | undefined>();
+  const [arCustomerFilter, setArCustomerFilter] = useState<string | undefined>();
+  const [receivablePaymentModal, setReceivablePaymentModal] = useState<Receivable | null>(null);
+  const [receivableDetailModal, setReceivableDetailModal] = useState<Receivable | null>(null);
+  const [receivableForm] = Form.useForm();
+
+  const [profitPeriod, setProfitPeriod] = useState<'month' | 'quarter'>('month');
+  const [profitBaseDate, setProfitBaseDate] = useState<dayjs.Dayjs>(dayjs());
+  const [profitCustomerFilter, setProfitCustomerFilter] = useState<string | undefined>();
+  const [profitCategoryFilter, setProfitCategoryFilter] = useState<string | undefined>();
 
   const categories = useMemo(() => {
     return [...new Set(products.map(p => p.category))];
@@ -217,6 +229,153 @@ export default function ReconciliationWindow() {
     }).sort((a, b) => b.turnoverRate - a.turnoverRate);
   }, [stockRecords, stockMovements, reportMonth, turnoverCategoryFilter, turnoverWarehouseFilter]);
 
+  const arCustomers = useMemo(() => {
+    return [...new Set(receivables.map(r => r.customerName))];
+  }, [receivables]);
+
+  const arStats = useMemo(() => {
+    const totalReceivable = receivables.reduce((s, r) => s + r.totalAmount, 0);
+    const totalReceived = receivables.reduce((s, r) => s + r.receivedAmount, 0);
+    const totalUnreceived = receivables.reduce((s, r) => s + r.unreceivedAmount, 0);
+    const overdue = receivables.filter(r =>
+      r.status !== 'paid' && dayjs(r.dueDate).isBefore(dayjs())
+    ).reduce((s, r) => s + r.unreceivedAmount, 0);
+    return { totalReceivable, totalReceived, totalUnreceived, overdue, count: receivables.length };
+  }, [receivables]);
+
+  const customerSummary = useMemo(() => {
+    const map: Record<string, {
+      customerName: string;
+      billCount: number; totalAmount: number; receivedAmount: number; unreceivedAmount: number;
+      overdueAmount: number;
+    }> = {};
+    receivables.forEach(r => {
+      if (!map[r.customerName]) {
+        map[r.customerName] = {
+          customerName: r.customerName,
+          billCount: 0, totalAmount: 0, receivedAmount: 0, unreceivedAmount: 0, overdueAmount: 0,
+        };
+      }
+      const s = map[r.customerName];
+      s.billCount++;
+      s.totalAmount += r.totalAmount;
+      s.receivedAmount += r.receivedAmount;
+      s.unreceivedAmount += r.unreceivedAmount;
+      if (r.status !== 'paid' && dayjs(r.dueDate).isBefore(dayjs())) {
+        s.overdueAmount += r.unreceivedAmount;
+      }
+    });
+    return Object.values(map).sort((a, b) => b.unreceivedAmount - a.unreceivedAmount);
+  }, [receivables]);
+
+  const filteredReceivables = useMemo(() => {
+    return receivables.filter(r => {
+      if (arKeyword && !r.billNo.includes(arKeyword) && !r.salesOrderNo.includes(arKeyword)
+        && !r.customerName.includes(arKeyword) && !r.shipmentNo.includes(arKeyword)) return false;
+      if (arStatusFilter && r.status !== arStatusFilter) return false;
+      if (arCustomerFilter && r.customerName !== arCustomerFilter) return false;
+      return true;
+    }).sort((a, b) => dayjs(a.dueDate).valueOf() - dayjs(b.dueDate).valueOf());
+  }, [receivables, arKeyword, arStatusFilter, arCustomerFilter]);
+
+  const profitStats = useMemo(() => {
+    let filteredShipments = shipments;
+    if (profitCustomerFilter) {
+      filteredShipments = filteredShipments.filter(s => s.customerName === profitCustomerFilter);
+    }
+    if (profitCategoryFilter) {
+      filteredShipments = filteredShipments.filter(s =>
+        s.items.some(item => {
+          const product = products.find(p => p.id === item.productId);
+          return product?.category === profitCategoryFilter;
+        })
+      );
+    }
+    const revenue = filteredShipments.reduce((s, sh) => s + sh.totalAmount, 0);
+    const cost = filteredShipments.reduce((s, sh) => s + (sh.costAmount || 0), 0);
+    const profit = revenue - cost;
+    const rate = revenue > 0 ? +(profit / revenue * 100).toFixed(2) : 0;
+    return { revenue, cost, profit, rate };
+  }, [shipments, products, profitCustomerFilter, profitCategoryFilter]);
+
+  const profitChartData = useMemo(() => {
+    const periods = profitPeriod === 'month' ? 6 : 4;
+    const data: { period: string; revenue: number; cost: number; profit: number; rate: number }[] = [];
+    for (let p = periods - 1; p >= 0; p--) {
+      let periodStart: dayjs.Dayjs;
+      let periodEnd: dayjs.Dayjs;
+      let key: string;
+      if (profitPeriod === 'month') {
+        const d = profitBaseDate.subtract(p, 'month').clone();
+        periodStart = d.clone().startOf('month');
+        periodEnd = d.clone().endOf('month');
+        key = d.format('YYYY-MM');
+      } else {
+        const baseQuarter = Math.floor(profitBaseDate.month() / 3);
+        const targetQuarter = baseQuarter - p;
+        const yearAdjust = targetQuarter < 0 ? Math.floor(targetQuarter / 4) : 0;
+        const quarter = ((targetQuarter % 4) + 4) % 4;
+        const year = profitBaseDate.year() + yearAdjust;
+        periodStart = dayjs(`${year}-${quarter * 3 + 1}-01`).startOf('month');
+        periodEnd = dayjs(`${year}-${quarter * 3 + 3}-01`).endOf('month');
+        key = `${year}Q${quarter + 1}`;
+      }
+      let periodShipments = shipments.filter(sh => dayjs(sh.createTime).isBetween(periodStart, periodEnd, null, '[]'));
+      if (profitCustomerFilter) {
+        periodShipments = periodShipments.filter(s => s.customerName === profitCustomerFilter);
+      }
+      if (profitCategoryFilter) {
+        periodShipments = periodShipments.filter(s =>
+          s.items.some(item => {
+            const product = products.find(pr => pr.id === item.productId);
+            return product?.category === profitCategoryFilter;
+          })
+        );
+      }
+      const revenue = periodShipments.reduce((s, sh) => s + sh.totalAmount, 0);
+      const cost = periodShipments.reduce((s, sh) => s + (sh.costAmount || 0), 0);
+      const profit = revenue - cost;
+      const rate = revenue > 0 ? +(profit / revenue * 100).toFixed(2) : 0;
+      data.push({ period: key, revenue, cost, profit, rate });
+    }
+    return data;
+  }, [shipments, products, profitPeriod, profitBaseDate, profitCustomerFilter, profitCategoryFilter]);
+
+  const profitTableData = useMemo(() => {
+    let filtered = shipments;
+    if (profitCustomerFilter) {
+      filtered = filtered.filter(s => s.customerName === profitCustomerFilter);
+    }
+    if (profitCategoryFilter) {
+      filtered = filtered.filter(s =>
+        s.items.some(item => {
+          const product = products.find(p => p.id === item.productId);
+          return product?.category === profitCategoryFilter;
+        })
+      );
+    }
+    return filtered.map(sh => {
+      const cost = sh.costAmount || 0;
+      const profit = sh.totalAmount - cost;
+      const rate = sh.totalAmount > 0 ? +(profit / sh.totalAmount * 100).toFixed(2) : 0;
+      return {
+        id: sh.id,
+        shipmentNo: sh.shipmentNo,
+        salesOrderNo: sh.salesOrderNo,
+        customerName: sh.customerName,
+        createTime: sh.createTime,
+        totalAmount: sh.totalAmount,
+        costAmount: cost,
+        profit,
+        profitRate: rate,
+      };
+    });
+  }, [shipments, products, profitCustomerFilter, profitCategoryFilter]);
+
+  const shipmentCustomers = useMemo(() => {
+    return [...new Set(shipments.map(s => s.customerName))];
+  }, [shipments]);
+
   const handlePayment = async () => {
     if (!paymentModal) return;
     try {
@@ -229,6 +388,106 @@ export default function ReconciliationWindow() {
       //
     }
   };
+
+  const handleReceivablePayment = async () => {
+    if (!receivablePaymentModal) return;
+    try {
+      const values = await receivableForm.validateFields();
+      addReceivablePayment(receivablePaymentModal.id, values);
+      message.success('收款记录已添加');
+      setReceivablePaymentModal(null);
+      receivableForm.resetFields();
+    } catch (e) {
+      //
+    }
+  };
+
+  const receivableColumns: ColumnsType<Receivable> = [
+    { title: '账单号', dataIndex: 'billNo', width: 150, fixed: 'left' },
+    { title: '销售订单号', dataIndex: 'salesOrderNo', width: 150 },
+    { title: '发货单号', dataIndex: 'shipmentNo', width: 150 },
+    { title: '客户名称', dataIndex: 'customerName', width: 180 },
+    {
+      title: '账单金额',
+      dataIndex: 'totalAmount',
+      width: 120,
+      align: 'right',
+      render: v => <span style={{ fontWeight: 500 }}>¥{v.toLocaleString()}</span>,
+    },
+    {
+      title: '已收款',
+      width: 120,
+      align: 'right',
+      render: (_, r) => <span style={{ color: '#52c41a', fontWeight: 500 }}>¥{r.receivedAmount.toLocaleString()}</span>,
+    },
+    {
+      title: '未收款',
+      width: 120,
+      align: 'right',
+      render: (_, r) => r.unreceivedAmount > 0
+        ? <span style={{ color: '#cf1322', fontWeight: 600 }}>¥{r.unreceivedAmount.toLocaleString()}</span>
+        : <span style={{ color: '#8c8c8c' }}>¥0</span>,
+    },
+    {
+      title: '收款进度',
+      width: 160,
+      render: (_, r) => {
+        const pct = r.totalAmount > 0 ? Math.round(r.receivedAmount / r.totalAmount * 100) : 0;
+        return (
+          <Tooltip title={`${r.receivedAmount} / ${r.totalAmount} (${pct}%)`}>
+            <Progress
+              percent={pct}
+              size="small"
+              status={pct === 100 ? 'success' : pct > 0 ? 'active' : 'exception'}
+              showInfo={true}
+            />
+          </Tooltip>
+        );
+      },
+    },
+    { title: '账单日期', dataIndex: 'billDate', width: 110 },
+    {
+      title: '到期日期',
+      dataIndex: 'dueDate',
+      width: 110,
+      render: (v, r) => {
+        const overdue = r.status !== 'paid' && dayjs(v).isBefore(dayjs());
+        return (
+          <span style={{ color: overdue ? '#cf1322' : undefined, fontWeight: overdue ? 600 : undefined }}>
+            {overdue && <WarningOutlined style={{ marginRight: 4 }} />}{v}
+          </span>
+        );
+      },
+    },
+    {
+      title: '状态',
+      width: 100,
+      render: (_, r) => <Tag color={paymentStatusMap[r.status].color}>{paymentStatusMap[r.status].text}</Tag>,
+    },
+    {
+      title: '操作',
+      width: 160,
+      fixed: 'right',
+      render: (_, record) => (
+        <div className="table-action-col">
+          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setReceivableDetailModal(record)}>
+            明细
+          </Button>
+          {record.status !== 'paid' && (
+            <Button
+              type="primary"
+              size="small"
+              ghost
+              icon={<PlusOutlined />}
+              onClick={() => { setReceivablePaymentModal(record); receivableForm.resetFields(); }}
+            >
+              登记收款
+            </Button>
+          )}
+        </div>
+      ),
+    },
+  ];
 
   const payableColumns: ColumnsType<Payable> = [
     { title: '账单号', dataIndex: 'billNo', width: 150, fixed: 'left' },
@@ -921,6 +1180,322 @@ export default function ReconciliationWindow() {
                 </div>
               ),
             },
+            {
+              key: 'receivable',
+              label: <span><DollarOutlined />客户应收</span>,
+              children: (
+                <>
+                  <div className="page-header" style={{ marginTop: -16 }}>
+                    <div>
+                      <div className="page-title">客户应收管理</div>
+                      <div className="page-subtitle">管理客户应收账款，登记收款记录</div>
+                    </div>
+                  </div>
+
+                  <div className="stat-cards">
+                    <Card className="stat-card" bordered={false}>
+                      <div className="stat-label">应收账单总数</div>
+                      <div className="stat-value">{arStats.count}</div>
+                      <div className="stat-trend">覆盖 {arCustomers.length} 家客户</div>
+                    </Card>
+                    <Card className="stat-card" bordered={false}>
+                      <div className="stat-label">应收总额</div>
+                      <div className="stat-value">¥{arStats.totalReceivable.toLocaleString()}</div>
+                      <div className="stat-trend">已收 ¥{arStats.totalReceived.toLocaleString()}</div>
+                    </Card>
+                    <Card className="stat-card" bordered={false} style={{ border: '1px solid #ffccc7' }}>
+                      <div className="stat-label" style={{ color: '#a8071a' }}><WarningOutlined /> 未收款项</div>
+                      <div className="stat-value" style={{ color: '#cf1322' }}>¥{arStats.totalUnreceived.toLocaleString()}</div>
+                      <div className="stat-trend" style={{ color: '#cf1322' }}>
+                        待收款 {receivables.filter(r => r.status !== 'paid').length} 笔
+                      </div>
+                    </Card>
+                    <Card className="stat-card" bordered={false} style={{ border: '1px solid #ffa39e', background: '#fff1f0' }}>
+                      <div className="stat-label" style={{ color: '#a8071a' }}>逾期金额</div>
+                      <div className="stat-value" style={{ color: '#cf1322' }}>¥{arStats.overdue.toLocaleString()}</div>
+                      <div className="stat-trend" style={{ color: '#cf1322', fontWeight: 500 }}>请及时催收！</div>
+                    </Card>
+                  </div>
+
+                  <Collapse
+                    style={{ marginBottom: 16 }}
+                    items={[{
+                      key: '1',
+                      label: <strong><BarChartOutlined /> 按客户汇总</strong>,
+                      children: (
+                        <Table
+                          size="small"
+                          pagination={false}
+                          dataSource={customerSummary}
+                          rowKey="customerName"
+                          columns={[
+                            { title: '客户名称', dataIndex: 'customerName', width: 220 },
+                            { title: '账单数', dataIndex: 'billCount', width: 80, align: 'right' },
+                            {
+                              title: '累计金额', dataIndex: 'totalAmount', width: 130, align: 'right',
+                              render: v => <span style={{ fontWeight: 500 }}>¥{v.toLocaleString()}</span>
+                            },
+                            {
+                              title: '已收款', dataIndex: 'receivedAmount', width: 130, align: 'right',
+                              render: v => <span style={{ color: '#52c41a' }}>¥{v.toLocaleString()}</span>
+                            },
+                            {
+                              title: '未收金额',
+                              dataIndex: 'unreceivedAmount',
+                              width: 140,
+                              align: 'right',
+                              render: (v, r) => {
+                                const pct = r.totalAmount > 0 ? Math.round(r.receivedAmount / r.totalAmount * 100) : 0;
+                                return (
+                                  <div>
+                                    <div style={{ color: '#cf1322', fontWeight: 600 }}>¥{v.toLocaleString()}</div>
+                                    <Progress percent={pct} size="small" showInfo={false} style={{ marginTop: 4, width: 100 }} />
+                                  </div>
+                                );
+                              },
+                            },
+                            {
+                              title: '逾期金额',
+                              dataIndex: 'overdueAmount',
+                              width: 130,
+                              align: 'right',
+                              render: v => v > 0
+                                ? <Tag color="red">¥{v.toLocaleString()}</Tag>
+                                : <span style={{ color: '#52c41a' }}>无逾期</span>,
+                            },
+                          ]}
+                        />
+                      ),
+                    }]}
+                  />
+
+                  <div className="filter-bar">
+                    <Input
+                      placeholder="搜索账单号/订单号/客户/发货单"
+                      prefix={<SearchOutlined />}
+                      value={arKeyword}
+                      onChange={e => setArKeyword(e.target.value)}
+                      style={{ width: 300 }}
+                      allowClear
+                    />
+                    <Select
+                      placeholder="选择客户"
+                      allowClear
+                      style={{ width: 220 }}
+                      showSearch
+                      value={arCustomerFilter}
+                      onChange={setArCustomerFilter}
+                      options={arCustomers.map(c => ({ value: c, label: c }))}
+                    />
+                    <Select
+                      placeholder="收款状态"
+                      allowClear
+                      style={{ width: 140 }}
+                      value={arStatusFilter}
+                      onChange={setArStatusFilter}
+                      options={Object.entries(paymentStatusMap).map(([k, v]) => ({ value: k, label: v.text }))}
+                    />
+                    <Button type="primary" ghost onClick={() => { setArKeyword(''); setArStatusFilter(undefined); setArCustomerFilter(undefined); }}>
+                      重置
+                    </Button>
+                    <Button icon={<FileExcelOutlined />} onClick={() => {
+                      const csvContent = [
+                        ['账单号', '销售订单号', '发货单号', '客户名称', '账单金额', '已收款', '未收款', '账单日期', '到期日期', '状态'],
+                        ...filteredReceivables.map(r => [
+                          r.billNo, r.salesOrderNo, r.shipmentNo, r.customerName,
+                          r.totalAmount, r.receivedAmount, r.unreceivedAmount,
+                          r.billDate, r.dueDate, paymentStatusMap[r.status].text
+                        ])
+                      ].map(row => row.join(',')).join('\n');
+                      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = `客户应收报表_${dayjs().format('YYYYMMDD')}.csv`;
+                      link.click();
+                      URL.revokeObjectURL(url);
+                      message.success('报表已导出');
+                    }}>
+                      导出Excel
+                    </Button>
+                  </div>
+
+                  <Table
+                    columns={receivableColumns}
+                    dataSource={filteredReceivables}
+                    rowKey="id"
+                    scroll={{ x: 1700 }}
+                    pagination={{ pageSize: 10, showTotal: t => `共 ${t} 条账单` }}
+                  />
+                </>
+              ),
+            },
+            {
+              key: 'sales-profit',
+              label: <span><FundOutlined />销售毛利</span>,
+              children: (
+                <div>
+                  <div className="page-header" style={{ marginTop: -16 }}>
+                    <div>
+                      <div className="page-title">销售毛利报表</div>
+                      <div className="page-subtitle">分析销售收入、成本和毛利趋势</div>
+                    </div>
+                    <Space>
+                      <Radio.Group value={profitPeriod} onChange={(e) => setProfitPeriod(e.target.value)}>
+                        <Radio.Button value="month">按月度</Radio.Button>
+                        <Radio.Button value="quarter">按季度</Radio.Button>
+                      </Radio.Group>
+                      {profitPeriod === 'month' ? (
+                        <DatePicker
+                          picker="month"
+                          value={profitBaseDate}
+                          onChange={(v) => v && setProfitBaseDate(v)}
+                          format="YYYY年MM月"
+                        />
+                      ) : (
+                        <DatePicker
+                          picker="quarter"
+                          value={profitBaseDate}
+                          onChange={(v) => v && setProfitBaseDate(v)}
+                          format="YYYY年Q季度"
+                        />
+                      )}
+                      <Select
+                        placeholder="选择客户"
+                        allowClear
+                        style={{ width: 180 }}
+                        showSearch
+                        value={profitCustomerFilter}
+                        onChange={setProfitCustomerFilter}
+                        options={shipmentCustomers.map(c => ({ value: c, label: c }))}
+                      />
+                      <Select
+                        placeholder="产品分类"
+                        allowClear
+                        style={{ width: 150 }}
+                        value={profitCategoryFilter}
+                        onChange={setProfitCategoryFilter}
+                        options={categories.map(c => ({ value: c, label: c }))}
+                      />
+                      <Button ghost onClick={() => { setProfitCustomerFilter(undefined); setProfitCategoryFilter(undefined); }}>
+                        重置筛选
+                      </Button>
+                      <Button icon={<FileExcelOutlined />} onClick={() => {
+                        const csvContent = [
+                          ['发货单号', '销售订单号', '客户名称', '创建时间', '销售收入', '销售成本', '毛利润', '毛利率(%)'],
+                          ...profitTableData.map(d => [
+                            d.shipmentNo, d.salesOrderNo, d.customerName, d.createTime,
+                            d.totalAmount, d.costAmount, d.profit, d.profitRate
+                          ])
+                        ].map(row => row.join(',')).join('\n');
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `销售毛利报表_${dayjs().format('YYYYMMDD')}.csv`;
+                        link.click();
+                        URL.revokeObjectURL(url);
+                        message.success('报表已导出');
+                      }}>
+                        导出Excel
+                      </Button>
+                    </Space>
+                  </div>
+
+                  <Row gutter={16} style={{ marginBottom: 24 }}>
+                    <Col span={6}>
+                      <Card>
+                        <Statistic title="销售收入" value={profitStats.revenue} prefix="¥" precision={0} valueStyle={{ color: '#1677ff' }} />
+                      </Card>
+                    </Col>
+                    <Col span={6}>
+                      <Card>
+                        <Statistic title="销售成本" value={profitStats.cost} prefix="¥" precision={0} valueStyle={{ color: '#faad14' }} />
+                      </Card>
+                    </Col>
+                    <Col span={6}>
+                      <Card>
+                        <Statistic
+                          title="毛利润"
+                          value={profitStats.profit}
+                          prefix="¥"
+                          precision={0}
+                          valueStyle={{ color: profitStats.profit >= 0 ? '#52c41a' : '#cf1322' }}
+                        />
+                      </Card>
+                    </Col>
+                    <Col span={6}>
+                      <Card>
+                        <Statistic
+                          title="毛利率"
+                          value={profitStats.rate}
+                          suffix="%"
+                          precision={1}
+                          valueStyle={{ color: profitStats.rate >= 20 ? '#52c41a' : profitStats.rate >= 10 ? '#faad14' : '#cf1322' }}
+                        />
+                      </Card>
+                    </Col>
+                  </Row>
+
+                  <Card title="📈 销售/成本/毛利趋势" style={{ marginBottom: 24 }}>
+                    <ResponsiveContainer width="100%" height={320}>
+                      <ComposedChart data={profitChartData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="period" />
+                        <YAxis yAxisId="left" />
+                        <YAxis yAxisId="right" orientation="right" />
+                        <RTooltip formatter={(val: any, name: string) => {
+                          const map: Record<string, string> = {
+                            revenue: '销售收入', cost: '销售成本', profit: '毛利润', rate: '毛利率(%)'
+                          };
+                          return [typeof val === 'number' ? (name === 'rate' ? `${val}%` : `¥${val.toLocaleString()}`) : val, map[name] || name];
+                        }} />
+                        <Legend />
+                        <Bar yAxisId="left" dataKey="revenue" name="销售收入" fill="#1677ff" radius={[4, 4, 0, 0]} />
+                        <Bar yAxisId="left" dataKey="cost" name="销售成本" fill="#faad14" radius={[4, 4, 0, 0]} />
+                        <Bar yAxisId="left" dataKey="profit" name="毛利润" fill="#52c41a" radius={[4, 4, 0, 0]} />
+                        <Line yAxisId="right" type="monotone" dataKey="rate" name="毛利率" stroke="#722ed1" strokeWidth={3} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </Card>
+
+                  <Divider />
+                  <div className="modal-section-title">📋 发货单毛利明细</div>
+                  <Table
+                    size="small"
+                    dataSource={profitTableData}
+                    rowKey="id"
+                    scroll={{ x: 1200 }}
+                    pagination={{ pageSize: 15, showTotal: t => `共 ${t} 条发货单` }}
+                    columns={[
+                      { title: '发货单号', dataIndex: 'shipmentNo', width: 150, fixed: 'left' },
+                      { title: '销售订单号', dataIndex: 'salesOrderNo', width: 150 },
+                      { title: '客户名称', dataIndex: 'customerName', width: 180 },
+                      { title: '创建时间', dataIndex: 'createTime', width: 160 },
+                      {
+                        title: '销售收入', dataIndex: 'totalAmount', width: 130, align: 'right',
+                        render: v => <span style={{ color: '#1677ff', fontWeight: 500 }}>¥{v.toLocaleString()}</span>
+                      },
+                      {
+                        title: '销售成本', dataIndex: 'costAmount', width: 130, align: 'right',
+                        render: v => <span style={{ color: '#faad14' }}>¥{v.toLocaleString()}</span>
+                      },
+                      {
+                        title: '毛利润', dataIndex: 'profit', width: 130, align: 'right',
+                        render: v => <span style={{ color: v >= 0 ? '#52c41a' : '#cf1322', fontWeight: 600 }}>¥{v.toLocaleString()}</span>
+                      },
+                      {
+                        title: '毛利率', dataIndex: 'profitRate', width: 120, align: 'center',
+                        render: v => {
+                          const color = v >= 20 ? 'green' : v >= 10 ? 'orange' : 'red';
+                          return <Tag color={color}>{v}%</Tag>;
+                        }
+                      },
+                    ]}
+                  />
+                </div>
+              ),
+            },
           ]}
         />
       </div>
@@ -1110,6 +1685,200 @@ export default function ReconciliationWindow() {
                     prefix="¥"
                     precision={0}
                     valueStyle={{ color: detailModal.unpaidAmount > 0 ? '#cf1322' : '#52c41a' }}
+                  />
+                </Card>
+              </Col>
+            </Row>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        title={
+          <div>
+            登记收款
+            <Tag style={{ marginLeft: 8 }}>{receivablePaymentModal?.billNo}</Tag>
+          </div>
+        }
+        open={!!receivablePaymentModal}
+        onCancel={() => { setReceivablePaymentModal(null); receivableForm.resetFields(); }}
+        onOk={handleReceivablePayment}
+        width={520}
+        okText="确认收款"
+        cancelText="取消"
+      >
+        {receivablePaymentModal && (
+          <div>
+            <Card size="small" style={{ marginBottom: 16, background: '#fafafa' }}>
+              <Row gutter={16}>
+                <Col span={12}>
+                  <p><strong>客户：</strong>{receivablePaymentModal.customerName}</p>
+                  <p><strong>账单金额：</strong><span style={{ fontWeight: 600 }}>¥{receivablePaymentModal.totalAmount.toLocaleString()}</span></p>
+                </Col>
+                <Col span={12}>
+                  <p><strong>已收款：</strong><span style={{ color: '#52c41a' }}>¥{receivablePaymentModal.receivedAmount.toLocaleString()}</span></p>
+                  <p><strong>未收款：</strong><span style={{ color: '#cf1322', fontWeight: 600 }}>¥{receivablePaymentModal.unreceivedAmount.toLocaleString()}</span></p>
+                </Col>
+              </Row>
+              <Progress
+                percent={receivablePaymentModal.totalAmount > 0 ? Math.round(receivablePaymentModal.receivedAmount / receivablePaymentModal.totalAmount * 100) : 0}
+                showInfo={true}
+              />
+            </Card>
+            <Form form={receivableForm} layout="vertical">
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item
+                    name="amount"
+                    label="收款金额 (元)"
+                    rules={[
+                      { required: true, message: '请输入收款金额' },
+                      {
+                        validator: (_, v) => v > receivablePaymentModal.unreceivedAmount + 0.01
+                          ? Promise.reject('收款金额不能超过未收款金额')
+                          : Promise.resolve()
+                      }
+                    ]}
+                    style={{ marginBottom: 0 }}
+                  >
+                    <InputNumber
+                      min={0}
+                      max={receivablePaymentModal.unreceivedAmount}
+                      prefix="¥"
+                      style={{ width: '100%' }}
+                      placeholder={`最多可收 ¥${receivablePaymentModal.unreceivedAmount.toLocaleString()}`}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="method" label="收款方式" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                    <Select options={[
+                      { value: '银行转账', label: '银行转账' },
+                      { value: '银行承兑', label: '银行承兑汇票' },
+                      { value: '商业承兑', label: '商业承兑汇票' },
+                      { value: '现金', label: '现金' },
+                      { value: '支付宝', label: '支付宝' },
+                      { value: '微信', label: '微信支付' },
+                    ]} />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Form.Item name="reference" label="流水号" style={{ marginTop: 16, marginBottom: 0 }}>
+                <Input placeholder="银行流水号、票据号等" />
+              </Form.Item>
+              <Form.Item name="remark" label="备注" style={{ marginTop: 16, marginBottom: 0 }}>
+                <Input.TextArea rows={2} placeholder="备注说明" />
+              </Form.Item>
+            </Form>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        title={`应收详情 - ${receivableDetailModal?.billNo}`}
+        open={!!receivableDetailModal}
+        onCancel={() => setReceivableDetailModal(null)}
+        width={780}
+        footer={[<Button key="close" onClick={() => setReceivableDetailModal(null)}>关闭</Button>]}
+      >
+        {receivableDetailModal && (
+          <div>
+            <Row gutter={24}>
+              <Col span={12}>
+                <p><strong>客户：</strong>{receivableDetailModal.customerName}</p>
+                <p><strong>销售订单：</strong>{receivableDetailModal.salesOrderNo}</p>
+                <p><strong>发货单：</strong>{receivableDetailModal.shipmentNo}</p>
+              </Col>
+              <Col span={12}>
+                <p><strong>账单日期：</strong>{receivableDetailModal.billDate}</p>
+                <p><strong>到期日期：</strong>
+                  <span style={{
+                    color: receivableDetailModal.status !== 'paid' && dayjs(receivableDetailModal.dueDate).isBefore(dayjs())
+                      ? '#cf1322' : undefined,
+                    fontWeight: 600
+                  }}>
+                    {receivableDetailModal.dueDate}
+                  </span>
+                </p>
+                <p><strong>状态：</strong>
+                  <Tag color={paymentStatusMap[receivableDetailModal.status].color}>
+                    {paymentStatusMap[receivableDetailModal.status].text}
+                  </Tag>
+                </p>
+              </Col>
+            </Row>
+            <Divider />
+            <div className="modal-section-title">物料明细</div>
+            <Table
+              size="small"
+              pagination={false}
+              dataSource={receivableDetailModal.items}
+              rowKey="productId"
+              columns={[
+                { title: '物料', dataIndex: 'productName' },
+                { title: 'SKU', dataIndex: 'sku', width: 120 },
+                { title: '数量', dataIndex: 'quantity', width: 80, align: 'right' },
+                { title: '单价', width: 90, align: 'right', render: (_, r) => `¥${r.unitPrice}` },
+                { title: '成本价', width: 90, align: 'right', render: (_, r) => `¥${r.costPrice}` },
+                { title: '小计', width: 110, align: 'right', render: (_, r) => `¥${r.subtotal.toLocaleString()}` },
+              ]}
+              summary={() => (
+                <Table.Summary>
+                  <Table.Summary.Row>
+                    <Table.Summary.Cell index={0} colSpan={5}><div style={{ textAlign: 'right', fontWeight: 600 }}>合计：</div></Table.Summary.Cell>
+                    <Table.Summary.Cell index={5}>
+                      <div style={{ textAlign: 'right', color: '#cf1322', fontWeight: 700 }}>
+                        ¥{receivableDetailModal.totalAmount.toLocaleString()}
+                      </div>
+                    </Table.Summary.Cell>
+                  </Table.Summary.Row>
+                </Table.Summary>
+              )}
+            />
+            <Divider />
+            <div className="modal-section-title">
+              收款记录（{receivableDetailModal.receipts.length}笔）
+            </div>
+            {receivableDetailModal.receipts.length === 0 ? (
+              <div className="empty-tip" style={{ padding: 24 }}>暂无收款记录</div>
+            ) : (
+              <Table
+                size="small"
+                pagination={false}
+                dataSource={receivableDetailModal.receipts}
+                rowKey="date"
+                columns={[
+                  { title: '收款日期', dataIndex: 'date', width: 120 },
+                  { title: '收款方式', dataIndex: 'method', width: 120 },
+                  {
+                    title: '收款金额', dataIndex: 'amount', width: 130, align: 'right',
+                    render: v => <span style={{ color: '#52c41a', fontWeight: 600 }}>¥{v.toLocaleString()}</span>
+                  },
+                  { title: '流水号', dataIndex: 'reference', width: 160, render: v => v || '-' },
+                  { title: '备注', dataIndex: 'remark', render: v => v || '-' },
+                ]}
+              />
+            )}
+            <Divider />
+            <Row gutter={24}>
+              <Col span={8}>
+                <Card size="small">
+                  <Statistic title="账单总额" value={receivableDetailModal.totalAmount} prefix="¥" precision={0} />
+                </Card>
+              </Col>
+              <Col span={8}>
+                <Card size="small">
+                  <Statistic title="已收款" value={receivableDetailModal.receivedAmount} prefix="¥" precision={0} valueStyle={{ color: '#52c41a' }} />
+                </Card>
+              </Col>
+              <Col span={8}>
+                <Card size="small" style={{ border: receivableDetailModal.unreceivedAmount > 0 ? '1px solid #ffccc7' : undefined }}>
+                  <Statistic
+                    title="未收款"
+                    value={receivableDetailModal.unreceivedAmount}
+                    prefix="¥"
+                    precision={0}
+                    valueStyle={{ color: receivableDetailModal.unreceivedAmount > 0 ? '#cf1322' : '#52c41a' }}
                   />
                 </Card>
               </Col>
