@@ -49,6 +49,9 @@ export default function ReconciliationWindow() {
   const [arKeyword, setArKeyword] = useState('');
   const [arStatusFilter, setArStatusFilter] = useState<PaymentStatus | undefined>();
   const [arCustomerFilter, setArCustomerFilter] = useState<string | undefined>();
+  const [arPeriod, setArPeriod] = useState<'month' | 'quarter'>('month');
+  const [arPeriodDate, setArPeriodDate] = useState<dayjs.Dayjs>(dayjs());
+  const [arCategoryFilter, setArCategoryFilter] = useState<string | undefined>();
   const [receivablePaymentModal, setReceivablePaymentModal] = useState<Receivable | null>(null);
   const [receivableDetailModal, setReceivableDetailModal] = useState<Receivable | null>(null);
   const [receivableForm] = Form.useForm();
@@ -233,15 +236,70 @@ export default function ReconciliationWindow() {
     return [...new Set(receivables.map(r => r.customerName))];
   }, [receivables]);
 
+  const arPeriodRange = useMemo(() => {
+    if (arPeriod === 'month') {
+      const d = arPeriodDate.clone();
+      return {
+        start: d.startOf('month'),
+        end: d.endOf('month'),
+        key: d.format('YYYY-MM'),
+      };
+    } else {
+      const quarter = Math.floor(arPeriodDate.month() / 3);
+      const year = arPeriodDate.year();
+      return {
+        start: dayjs(`${year}-${quarter * 3 + 1}-01`).startOf('month'),
+        end: dayjs(`${year}-${quarter * 3 + 3}-01`).endOf('month'),
+        key: `${year}Q${quarter + 1}`,
+      };
+    }
+  }, [arPeriod, arPeriodDate]);
+
+  const arFiltered = useMemo(() => {
+    return receivables.filter(r => {
+      if (!dayjs(r.billDate).isBetween(arPeriodRange.start, arPeriodRange.end, null, '[]')) return false;
+      if (arKeyword && !r.billNo.includes(arKeyword) && !r.salesOrderNo.includes(arKeyword)
+        && !r.customerName.includes(arKeyword) && !r.shipmentNo.includes(arKeyword)) return false;
+      if (arStatusFilter && r.status !== arStatusFilter) return false;
+      if (arCustomerFilter && r.customerName !== arCustomerFilter) return false;
+      if (arCategoryFilter) {
+        const hasCategory = r.items.some(item => {
+          const product = products.find(p => p.id === item.productId);
+          return product?.category === arCategoryFilter;
+        });
+        if (!hasCategory) return false;
+      }
+      return true;
+    }).sort((a, b) => dayjs(a.dueDate).valueOf() - dayjs(b.dueDate).valueOf());
+  }, [receivables, products, arPeriodRange, arKeyword, arStatusFilter, arCustomerFilter, arCategoryFilter]);
+
+  const calcReceivableAmounts = (r: Receivable) => {
+    if (!arCategoryFilter) {
+      return { totalAmount: r.totalAmount, receivedAmount: r.receivedAmount, unreceivedAmount: r.unreceivedAmount };
+    }
+    const matchedItems = r.items.filter(item => {
+      const product = products.find(p => p.id === item.productId);
+      return product?.category === arCategoryFilter;
+    });
+    const totalAmount = matchedItems.reduce((s, i) => s + i.subtotal, 0);
+    const receivedRatio = r.totalAmount > 0 ? r.receivedAmount / r.totalAmount : 0;
+    const receivedAmount = +(totalAmount * receivedRatio).toFixed(2);
+    return { totalAmount, receivedAmount, unreceivedAmount: totalAmount - receivedAmount };
+  };
+
   const arStats = useMemo(() => {
-    const totalReceivable = receivables.reduce((s, r) => s + r.totalAmount, 0);
-    const totalReceived = receivables.reduce((s, r) => s + r.receivedAmount, 0);
-    const totalUnreceived = receivables.reduce((s, r) => s + r.unreceivedAmount, 0);
-    const overdue = receivables.filter(r =>
-      r.status !== 'paid' && dayjs(r.dueDate).isBefore(dayjs())
-    ).reduce((s, r) => s + r.unreceivedAmount, 0);
-    return { totalReceivable, totalReceived, totalUnreceived, overdue, count: receivables.length };
-  }, [receivables]);
+    let totalReceivable = 0, totalReceived = 0, totalUnreceived = 0, overdue = 0;
+    arFiltered.forEach(r => {
+      const amounts = calcReceivableAmounts(r);
+      totalReceivable += amounts.totalAmount;
+      totalReceived += amounts.receivedAmount;
+      totalUnreceived += amounts.unreceivedAmount;
+      if (r.status !== 'paid' && dayjs(r.dueDate).isBefore(dayjs())) {
+        overdue += amounts.unreceivedAmount;
+      }
+    });
+    return { totalReceivable, totalReceived, totalUnreceived, overdue, count: arFiltered.length };
+  }, [arFiltered, products, arCategoryFilter]);
 
   const customerSummary = useMemo(() => {
     const map: Record<string, {
@@ -249,7 +307,8 @@ export default function ReconciliationWindow() {
       billCount: number; totalAmount: number; receivedAmount: number; unreceivedAmount: number;
       overdueAmount: number;
     }> = {};
-    receivables.forEach(r => {
+    arFiltered.forEach(r => {
+      const amounts = calcReceivableAmounts(r);
       if (!map[r.customerName]) {
         map[r.customerName] = {
           customerName: r.customerName,
@@ -258,45 +317,69 @@ export default function ReconciliationWindow() {
       }
       const s = map[r.customerName];
       s.billCount++;
-      s.totalAmount += r.totalAmount;
-      s.receivedAmount += r.receivedAmount;
-      s.unreceivedAmount += r.unreceivedAmount;
+      s.totalAmount += amounts.totalAmount;
+      s.receivedAmount += amounts.receivedAmount;
+      s.unreceivedAmount += amounts.unreceivedAmount;
       if (r.status !== 'paid' && dayjs(r.dueDate).isBefore(dayjs())) {
-        s.overdueAmount += r.unreceivedAmount;
+        s.overdueAmount += amounts.unreceivedAmount;
       }
     });
     return Object.values(map).sort((a, b) => b.unreceivedAmount - a.unreceivedAmount);
-  }, [receivables]);
+  }, [arFiltered, products, arCategoryFilter]);
 
-  const filteredReceivables = useMemo(() => {
-    return receivables.filter(r => {
-      if (arKeyword && !r.billNo.includes(arKeyword) && !r.salesOrderNo.includes(arKeyword)
-        && !r.customerName.includes(arKeyword) && !r.shipmentNo.includes(arKeyword)) return false;
-      if (arStatusFilter && r.status !== arStatusFilter) return false;
-      if (arCustomerFilter && r.customerName !== arCustomerFilter) return false;
-      return true;
-    }).sort((a, b) => dayjs(a.dueDate).valueOf() - dayjs(b.dueDate).valueOf());
-  }, [receivables, arKeyword, arStatusFilter, arCustomerFilter]);
+  const filteredReceivables = useMemo(() => arFiltered, [arFiltered]);
+
+  const calcShipmentProfit = (sh: typeof shipments[0], categoryFilter?: string, periodStart?: dayjs.Dayjs, periodEnd?: dayjs.Dayjs) => {
+    if (periodStart && periodEnd && !dayjs(sh.createTime).isBetween(periodStart, periodEnd, null, '[]')) {
+      return { revenue: 0, cost: 0, profit: 0, rate: 0, include: false };
+    }
+    let revenue = 0, cost = 0;
+    sh.items.forEach(item => {
+      if (categoryFilter) {
+        const product = products.find(p => p.id === item.productId);
+        if (product?.category !== categoryFilter) return;
+      }
+      revenue += item.subtotal;
+      cost += (sh.costAmount && sh.totalAmount > 0)
+        ? +(item.subtotal / sh.totalAmount * sh.costAmount).toFixed(2)
+        : +(item.subtotal * 0.7).toFixed(2);
+    });
+    const profit = +(revenue - cost).toFixed(2);
+    const rate = revenue > 0 ? +(profit / revenue * 100).toFixed(2) : 0;
+    return { revenue, cost, profit, rate, include: revenue > 0 };
+  };
+
+  const profitCurrentPeriod = useMemo(() => {
+    if (profitPeriod === 'month') {
+      const d = profitBaseDate.clone();
+      return {
+        start: d.startOf('month'),
+        end: d.endOf('month'),
+        key: d.format('YYYY-MM'),
+      };
+    } else {
+      const quarter = Math.floor(profitBaseDate.month() / 3);
+      const year = profitBaseDate.year();
+      return {
+        start: dayjs(`${year}-${quarter * 3 + 1}-01`).startOf('month'),
+        end: dayjs(`${year}-${quarter * 3 + 3}-01`).endOf('month'),
+        key: `${year}Q${quarter + 1}`,
+      };
+    }
+  }, [profitPeriod, profitBaseDate]);
 
   const profitStats = useMemo(() => {
-    let filteredShipments = shipments;
-    if (profitCustomerFilter) {
-      filteredShipments = filteredShipments.filter(s => s.customerName === profitCustomerFilter);
-    }
-    if (profitCategoryFilter) {
-      filteredShipments = filteredShipments.filter(s =>
-        s.items.some(item => {
-          const product = products.find(p => p.id === item.productId);
-          return product?.category === profitCategoryFilter;
-        })
-      );
-    }
-    const revenue = filteredShipments.reduce((s, sh) => s + sh.totalAmount, 0);
-    const cost = filteredShipments.reduce((s, sh) => s + (sh.costAmount || 0), 0);
-    const profit = revenue - cost;
+    let revenue = 0, cost = 0;
+    shipments.forEach(sh => {
+      const res = calcShipmentProfit(sh, profitCategoryFilter, profitCurrentPeriod.start, profitCurrentPeriod.end);
+      if (profitCustomerFilter && sh.customerName !== profitCustomerFilter) return;
+      revenue += res.revenue;
+      cost += res.cost;
+    });
+    const profit = +(revenue - cost).toFixed(2);
     const rate = revenue > 0 ? +(profit / revenue * 100).toFixed(2) : 0;
     return { revenue, cost, profit, rate };
-  }, [shipments, products, profitCustomerFilter, profitCategoryFilter]);
+  }, [shipments, products, profitCustomerFilter, profitCategoryFilter, profitCurrentPeriod]);
 
   const profitChartData = useMemo(() => {
     const periods = profitPeriod === 'month' ? 6 : 4;
@@ -320,21 +403,14 @@ export default function ReconciliationWindow() {
         periodEnd = dayjs(`${year}-${quarter * 3 + 3}-01`).endOf('month');
         key = `${year}Q${quarter + 1}`;
       }
-      let periodShipments = shipments.filter(sh => dayjs(sh.createTime).isBetween(periodStart, periodEnd, null, '[]'));
-      if (profitCustomerFilter) {
-        periodShipments = periodShipments.filter(s => s.customerName === profitCustomerFilter);
-      }
-      if (profitCategoryFilter) {
-        periodShipments = periodShipments.filter(s =>
-          s.items.some(item => {
-            const product = products.find(pr => pr.id === item.productId);
-            return product?.category === profitCategoryFilter;
-          })
-        );
-      }
-      const revenue = periodShipments.reduce((s, sh) => s + sh.totalAmount, 0);
-      const cost = periodShipments.reduce((s, sh) => s + (sh.costAmount || 0), 0);
-      const profit = revenue - cost;
+      let revenue = 0, cost = 0;
+      shipments.forEach(sh => {
+        const res = calcShipmentProfit(sh, profitCategoryFilter, periodStart, periodEnd);
+        if (profitCustomerFilter && sh.customerName !== profitCustomerFilter) return;
+        revenue += res.revenue;
+        cost += res.cost;
+      });
+      const profit = +(revenue - cost).toFixed(2);
       const rate = revenue > 0 ? +(profit / revenue * 100).toFixed(2) : 0;
       data.push({ period: key, revenue, cost, profit, rate });
     }
@@ -342,35 +418,28 @@ export default function ReconciliationWindow() {
   }, [shipments, products, profitPeriod, profitBaseDate, profitCustomerFilter, profitCategoryFilter]);
 
   const profitTableData = useMemo(() => {
-    let filtered = shipments;
-    if (profitCustomerFilter) {
-      filtered = filtered.filter(s => s.customerName === profitCustomerFilter);
-    }
-    if (profitCategoryFilter) {
-      filtered = filtered.filter(s =>
-        s.items.some(item => {
-          const product = products.find(p => p.id === item.productId);
-          return product?.category === profitCategoryFilter;
-        })
-      );
-    }
-    return filtered.map(sh => {
-      const cost = sh.costAmount || 0;
-      const profit = sh.totalAmount - cost;
-      const rate = sh.totalAmount > 0 ? +(profit / sh.totalAmount * 100).toFixed(2) : 0;
-      return {
+    const result: {
+      id: string; shipmentNo: string; salesOrderNo: string; customerName: string;
+      createTime: string; totalAmount: number; costAmount: number; profit: number; profitRate: number;
+    }[] = [];
+    shipments.forEach(sh => {
+      if (profitCustomerFilter && sh.customerName !== profitCustomerFilter) return;
+      const res = calcShipmentProfit(sh, profitCategoryFilter, profitCurrentPeriod.start, profitCurrentPeriod.end);
+      if (!res.include) return;
+      result.push({
         id: sh.id,
         shipmentNo: sh.shipmentNo,
         salesOrderNo: sh.salesOrderNo,
         customerName: sh.customerName,
         createTime: sh.createTime,
-        totalAmount: sh.totalAmount,
-        costAmount: cost,
-        profit,
-        profitRate: rate,
-      };
+        totalAmount: res.revenue,
+        costAmount: res.cost,
+        profit: res.profit,
+        profitRate: res.rate,
+      });
     });
-  }, [shipments, products, profitCustomerFilter, profitCategoryFilter]);
+    return result.sort((a, b) => dayjs(b.createTime).valueOf() - dayjs(a.createTime).valueOf());
+  }, [shipments, products, profitCustomerFilter, profitCategoryFilter, profitCurrentPeriod]);
 
   const shipmentCustomers = useMemo(() => {
     return [...new Set(shipments.map(s => s.customerName))];
@@ -409,32 +478,41 @@ export default function ReconciliationWindow() {
     { title: '客户名称', dataIndex: 'customerName', width: 180 },
     {
       title: '账单金额',
-      dataIndex: 'totalAmount',
       width: 120,
       align: 'right',
-      render: v => <span style={{ fontWeight: 500 }}>¥{v.toLocaleString()}</span>,
+      render: (_, r) => {
+        const amounts = calcReceivableAmounts(r);
+        return <span style={{ fontWeight: 500 }}>¥{amounts.totalAmount.toLocaleString()}</span>;
+      },
     },
     {
       title: '已收款',
       width: 120,
       align: 'right',
-      render: (_, r) => <span style={{ color: '#52c41a', fontWeight: 500 }}>¥{r.receivedAmount.toLocaleString()}</span>,
+      render: (_, r) => {
+        const amounts = calcReceivableAmounts(r);
+        return <span style={{ color: '#52c41a', fontWeight: 500 }}>¥{amounts.receivedAmount.toLocaleString()}</span>;
+      },
     },
     {
       title: '未收款',
       width: 120,
       align: 'right',
-      render: (_, r) => r.unreceivedAmount > 0
-        ? <span style={{ color: '#cf1322', fontWeight: 600 }}>¥{r.unreceivedAmount.toLocaleString()}</span>
-        : <span style={{ color: '#8c8c8c' }}>¥0</span>,
+      render: (_, r) => {
+        const amounts = calcReceivableAmounts(r);
+        return amounts.unreceivedAmount > 0
+          ? <span style={{ color: '#cf1322', fontWeight: 600 }}>¥{amounts.unreceivedAmount.toLocaleString()}</span>
+          : <span style={{ color: '#8c8c8c' }}>¥0</span>;
+      },
     },
     {
       title: '收款进度',
       width: 160,
       render: (_, r) => {
-        const pct = r.totalAmount > 0 ? Math.round(r.receivedAmount / r.totalAmount * 100) : 0;
+        const amounts = calcReceivableAmounts(r);
+        const pct = amounts.totalAmount > 0 ? Math.round(amounts.receivedAmount / amounts.totalAmount * 100) : 0;
         return (
-          <Tooltip title={`${r.receivedAmount} / ${r.totalAmount} (${pct}%)`}>
+          <Tooltip title={`${amounts.receivedAmount} / ${amounts.totalAmount} (${pct}%)`}>
             <Progress
               percent={pct}
               size="small"
@@ -1270,6 +1348,25 @@ export default function ReconciliationWindow() {
                   />
 
                   <div className="filter-bar">
+                    <Radio.Group value={arPeriod} onChange={(e) => setArPeriod(e.target.value)}>
+                      <Radio.Button value="month">按月度</Radio.Button>
+                      <Radio.Button value="quarter">按季度</Radio.Button>
+                    </Radio.Group>
+                    {arPeriod === 'month' ? (
+                      <DatePicker
+                        picker="month"
+                        value={arPeriodDate}
+                        onChange={(v) => v && setArPeriodDate(v)}
+                        format="YYYY年MM月"
+                      />
+                    ) : (
+                      <DatePicker
+                        picker="quarter"
+                        value={arPeriodDate}
+                        onChange={(v) => v && setArPeriodDate(v)}
+                        format="YYYY年Q季度"
+                      />
+                    )}
                     <Input
                       placeholder="搜索账单号/订单号/客户/发货单"
                       prefix={<SearchOutlined />}
@@ -1281,11 +1378,19 @@ export default function ReconciliationWindow() {
                     <Select
                       placeholder="选择客户"
                       allowClear
-                      style={{ width: 220 }}
+                      style={{ width: 200 }}
                       showSearch
                       value={arCustomerFilter}
                       onChange={setArCustomerFilter}
                       options={arCustomers.map(c => ({ value: c, label: c }))}
+                    />
+                    <Select
+                      placeholder="产品分类"
+                      allowClear
+                      style={{ width: 160 }}
+                      value={arCategoryFilter}
+                      onChange={setArCategoryFilter}
+                      options={categories.map(c => ({ value: c, label: c }))}
                     />
                     <Select
                       placeholder="收款状态"
@@ -1295,23 +1400,29 @@ export default function ReconciliationWindow() {
                       onChange={setArStatusFilter}
                       options={Object.entries(paymentStatusMap).map(([k, v]) => ({ value: k, label: v.text }))}
                     />
-                    <Button type="primary" ghost onClick={() => { setArKeyword(''); setArStatusFilter(undefined); setArCustomerFilter(undefined); }}>
+                    <Button type="primary" ghost onClick={() => {
+                      setArKeyword(''); setArStatusFilter(undefined); setArCustomerFilter(undefined);
+                      setArCategoryFilter(undefined); setArPeriodDate(dayjs());
+                    }}>
                       重置
                     </Button>
                     <Button icon={<FileExcelOutlined />} onClick={() => {
                       const csvContent = [
                         ['账单号', '销售订单号', '发货单号', '客户名称', '账单金额', '已收款', '未收款', '账单日期', '到期日期', '状态'],
-                        ...filteredReceivables.map(r => [
-                          r.billNo, r.salesOrderNo, r.shipmentNo, r.customerName,
-                          r.totalAmount, r.receivedAmount, r.unreceivedAmount,
-                          r.billDate, r.dueDate, paymentStatusMap[r.status].text
-                        ])
+                        ...filteredReceivables.map(r => {
+                          const amounts = calcReceivableAmounts(r);
+                          return [
+                            r.billNo, r.salesOrderNo, r.shipmentNo, r.customerName,
+                            amounts.totalAmount, amounts.receivedAmount, amounts.unreceivedAmount,
+                            r.billDate, r.dueDate, paymentStatusMap[r.status].text
+                          ];
+                        })
                       ].map(row => row.join(',')).join('\n');
                       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                       const url = URL.createObjectURL(blob);
                       const link = document.createElement('a');
                       link.href = url;
-                      link.download = `客户应收报表_${dayjs().format('YYYYMMDD')}.csv`;
+                      link.download = `客户应收报表_${arPeriodRange.key}_${dayjs().format('YYYYMMDD')}.csv`;
                       link.click();
                       URL.revokeObjectURL(url);
                       message.success('报表已导出');
@@ -1392,7 +1503,7 @@ export default function ReconciliationWindow() {
                         const url = URL.createObjectURL(blob);
                         const link = document.createElement('a');
                         link.href = url;
-                        link.download = `销售毛利报表_${dayjs().format('YYYYMMDD')}.csv`;
+                        link.download = `销售毛利报表_${profitCurrentPeriod.key}_${dayjs().format('YYYYMMDD')}.csv`;
                         link.click();
                         URL.revokeObjectURL(url);
                         message.success('报表已导出');

@@ -313,16 +313,37 @@ export default function ShippingWindow() {
       const values = await exceptionForm.validateFields();
       if (!detailModal) return;
 
-      const returnItems = (values.returnItems || [])
-        .filter((ri: any) => ri && ri.quantity && ri.quantity > 0)
-        .map((ri: any) => {
-          const item = detailModal.items.find(i => i.productId === ri.productId);
-          return {
+      const rawItems = (values.returnItems || [])
+        .filter((ri: any) => ri && ri.productId && ri.quantity && ri.quantity > 0);
+
+      const mergedMap: Record<string, { productId: string; productName: string; quantity: number }> = {};
+      rawItems.forEach((ri: any) => {
+        const shipItem = detailModal.items.find(i => i.productId === ri.productId);
+        if (!shipItem) {
+          message.error(`物料不存在：${ri.productId}`);
+          throw new Error('invalid item');
+        }
+        if (ri.quantity > shipItem.quantity) {
+          message.error(`${shipItem.productName} 退货数量(${ri.quantity})超过发货数量(${shipItem.quantity})`);
+          throw new Error('qty exceed');
+        }
+        if (mergedMap[ri.productId]) {
+          const total = mergedMap[ri.productId].quantity + ri.quantity;
+          if (total > shipItem.quantity) {
+            message.error(`${shipItem.productName} 退货总数量(${total})超过发货数量(${shipItem.quantity})`);
+            throw new Error('qty exceed');
+          }
+          mergedMap[ri.productId].quantity = total;
+        } else {
+          mergedMap[ri.productId] = {
             productId: ri.productId,
-            productName: item?.productName || '',
+            productName: shipItem.productName,
             quantity: ri.quantity,
           };
-        });
+        }
+      });
+
+      const returnItems = Object.values(mergedMap);
 
       const exceptionInfo: ShipmentExceptionInfo = {
         reason: values.reason,
@@ -333,7 +354,7 @@ export default function ShippingWindow() {
       };
 
       handleShipmentException(detailModal.id, exceptionInfo);
-      message.success('异常处理已完成');
+      message.success('异常处理已完成，库存和订单进度已更新');
       setExceptionModalOpen(false);
       exceptionForm.resetFields();
     } catch (e) {
@@ -792,13 +813,24 @@ export default function ShippingWindow() {
                         {...restField}
                         name={[name, 'productId']}
                         style={{ marginBottom: 0 }}
-                        rules={[{ required: true, message: '请选择物料' }]}
+                        rules={[{ required: true, message: '请选择物料' }, {
+                          validator: (_, value) => {
+                            const allItems = exceptionForm.getFieldValue('returnItems') || [];
+                            const selectedIds = allItems
+                              .filter((it: any, idx: number) => idx !== name && it?.productId)
+                              .map((it: any) => it.productId);
+                            if (selectedIds.includes(value)) {
+                              return Promise.reject(new Error('该物料已添加，如需调整数量请修改已有行'));
+                            }
+                            return Promise.resolve();
+                          }
+                        }]}
                       >
                         <Select
                           placeholder="选择退回物料"
                           options={detailModal?.items.map(item => ({
                             value: item.productId,
-                            label: item.productName,
+                            label: `${item.productName}（发货 ${item.quantity}）`,
                           })) || []}
                         />
                       </Form.Item>
@@ -808,11 +840,25 @@ export default function ShippingWindow() {
                         {...restField}
                         name={[name, 'quantity']}
                         style={{ marginBottom: 0 }}
-                        rules={[{ required: true, message: '请填写数量' }]}
+                        dependencies={[['returnItems', name, 'productId']]}
+                        rules={[
+                          { required: true, message: '请填写数量' },
+                          {
+                            validator: (_, value) => {
+                              if (!value || value <= 0) return Promise.reject(new Error('数量必须大于0'));
+                              const productId = exceptionForm.getFieldValue(['returnItems', name, 'productId']);
+                              const shipItem = detailModal?.items.find(i => i.productId === productId);
+                              if (!shipItem) return Promise.resolve();
+                              if (value > shipItem.quantity) {
+                                return Promise.reject(new Error(`不能超过发货数量${shipItem.quantity}`));
+                              }
+                              return Promise.resolve();
+                            }
+                          }
+                        ]}
                       >
                         <InputNumber
                           min={1}
-                          max={detailModal?.items.find(i => i.productId === exceptionForm.getFieldValue(['returnItems', name, 'productId']))?.quantity || 999}
                           style={{ width: '100%' }}
                           placeholder="退回数量"
                         />
@@ -826,7 +872,23 @@ export default function ShippingWindow() {
                     </Col>
                   </Row>
                 ))}
-                <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
+                <Button
+                  type="dashed"
+                  onClick={() => {
+                    const allItems = exceptionForm.getFieldValue('returnItems') || [];
+                    const currentSelected = allItems
+                      .filter((it: any) => it?.productId)
+                      .map((it: any) => it.productId);
+                    const available = detailModal?.items.filter(i => !currentSelected.includes(i.productId)) || [];
+                    if (available.length === 0) {
+                      message.warning('所有可退物料已添加');
+                      return;
+                    }
+                    add();
+                  }}
+                  block
+                  icon={<PlusOutlined />}
+                >
                   添加退回物料
                 </Button>
               </>

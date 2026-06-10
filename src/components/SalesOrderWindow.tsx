@@ -711,6 +711,7 @@ export default function SalesOrderWindow() {
                   pagination={false}
                   dataSource={orderShipments}
                   rowKey="id"
+                  scroll={{ x: 1200 }}
                   columns={[
                     { title: '发货单号', dataIndex: 'shipmentNo', width: 160 },
                     { title: '承运商', dataIndex: 'carrier', width: 120 },
@@ -729,6 +730,22 @@ export default function SalesOrderWindow() {
                         const cfg = shipmentStatusConfig[r.status] || { color: 'default', text: r.status };
                         return <Tag color={cfg.color}>{cfg.text}</Tag>;
                       },
+                    },
+                    {
+                      title: '签收人',
+                      width: 100,
+                      render: (_, r) => r.signoffPerson || <span style={{ color: '#8c8c8c' }}>-</span>,
+                    },
+                    {
+                      title: '签收时间',
+                      width: 170,
+                      render: (_, r) => r.signoffTime || <span style={{ color: '#8c8c8c' }}>-</span>,
+                    },
+                    {
+                      title: '签收备注',
+                      width: 180,
+                      ellipsis: true,
+                      render: (_, r) => r.signoffRemark || <span style={{ color: '#8c8c8c' }}>-</span>,
                     },
                   ]}
                 />
